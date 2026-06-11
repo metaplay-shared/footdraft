@@ -1,0 +1,196 @@
+@using System.Linq
+@using Game.Logic
+@using Metaplay.Core
+@using WebClientBase.Services
+@inject MetaplayClientService MetaplayService
+@implements IDisposable
+
+@* Season Pass + ranked ladder (Phase 5): earn pass XP from matches, claim the free & premium tracks, unlock
+   premium with gems, and watch your ranked division climb. Portrait, elevated-dark (t38) styled. *@
+
+<style>
+    .pass-xp { background: rgba(255,255,255,0.10); border-radius: 9999px; overflow: hidden; height: 0.5rem; }
+    .pass-xp-fill { background: linear-gradient(90deg,#46e2ab,#22b07e); height: 100%; transition: width 0.3s; }
+    .tier-cell { border: 1px solid rgba(255,255,255,0.07); }
+    .tier-claimed { background: rgba(52,211,154,0.12); border-color: rgba(52,211,154,0.5); }
+    .tier-ready   { border-color: var(--t38-amber); box-shadow: 0 0 10px rgba(233,185,73,0.35); }
+    .tier-locked  { opacity: 0.45; }
+</style>
+
+<div class="t38-bg fixed inset-0 z-40 overflow-y-auto t38-under-hud" style="padding-left: 1rem; padding-right: 1rem; padding-bottom: calc(2rem + env(safe-area-inset-bottom));">
+    <div class="w-full max-w-md mx-auto flex flex-col gap-3">
+        @if (Player == null)
+        {
+            <p class="text-center text-white/50 mt-10">Loading…</p>
+        }
+        else
+        {
+            <div class="flex items-center justify-between">
+                <h1 class="t38-display text-2xl text-white">🏅 SEASON PASS</h1>
+                <button class="text-xs px-3 py-1.5 rounded-xl" style="background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.6);"
+                        @onclick="OnClose">✕ CLOSE</button>
+            </div>
+
+            @if (_burstKey > 0)
+            {
+                <div @key="_burstKey">
+                    <span class="t38-fly-coin" style="left: 50%; top: 40%;">🪙</span>
+                    <span class="t38-fly-coin" style="left: 45%; top: 43%;">🪙</span>
+                    <span class="t38-fly-coin" style="left: 55%; top: 45%;">🪙</span>
+                </div>
+            }
+
+            @* Season header: division + SRP + timer *@
+            <div class="t38-card px-4 py-3 flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                    <span class="text-3xl">@Division.Emoji</span>
+                    <div>
+                        <p class="t38-display text-lg text-white">@Division.Name</p>
+                        <p class="text-[11px] text-white/50">@Srp SRP</p>
+                    </div>
+                </div>
+                <div class="text-right">
+                    <p class="t38-label text-[10px] text-white/45">Season ends</p>
+                    <p class="t38-display text-lg text-white t38-countdown">@SeasonEndsLabel</p>
+                </div>
+            </div>
+
+            @* Pass tier + XP *@
+            <div class="t38-card px-4 py-3">
+                <div class="flex items-center justify-between mb-1.5">
+                    <span class="t38-display text-white">Pass Tier @Tier / @Global.PassFreeRewards.Length</span>
+                    @if (!PremiumOwned)
+                    {
+                        bool affordPremium = Player.Wallet.Get(CurrencyType.Gems) >= Global.PremiumPassGemCost;
+                        <button class="t38-marquee-btn text-xs px-3 py-2 t38-tap" data-testid="buy-premium"
+                                style="@(affordPremium ? "" : "filter: grayscale(0.3) brightness(0.85);")"
+                                @onclick="@(affordPremium ? () => MetaplayService.BuyPremiumPass() : () => MetaplayService.RequestShop())">
+                            UNLOCK PREMIUM 💎@Global.PremiumPassGemCost@(affordPremium ? "" : " →")
+                        </button>
+                    }
+                    else
+                    {
+                        <span class="text-[11px]" style="color: var(--t38-amber); font-weight: 800;">★ PREMIUM</span>
+                    }
+                </div>
+                <div class="pass-xp"><div class="pass-xp-fill" style="width: @(TierProgressPct)%;"></div></div>
+                <p class="text-[11px] text-white/45 mt-2 leading-relaxed">
+                    Every matchday earns Pass XP: <span class="text-white/75" style="font-weight:700;">@Global.PassXpPerWin XP</span> for a win,
+                    <span class="text-white/75" style="font-weight:700;">@Global.PassXpPerLoss XP</span> otherwise,
+                    <span class="text-white/75" style="font-weight:700;">+@Global.PassXpPerRoundWon</span> per goal scored.
+                    Each <span class="text-white/75" style="font-weight:700;">@Global.PassXpPerTier XP</span> unlocks the next tier on both tracks —
+                    claim free tiers below, or unlock <span style="color:var(--t38-amber);font-weight:700;">PREMIUM</span> for the gold column too.
+                </p>
+                <div class="flex gap-2 mt-3">
+                    <button class="t38-cta @(FreeClaimable ? "t38-shine" : "") text-sm flex-1 py-2.5 rounded-xl t38-tap" disabled="@(!FreeClaimable)" data-testid="claim-free"
+                            @onclick="@(() => ClaimPass(false))">CLAIM FREE</button>
+                    <button class="t38-cta-amber @(PremiumClaimable ? "t38-shine" : "") text-sm flex-1 py-2.5 rounded-xl t38-tap" disabled="@(!PremiumClaimable)" data-testid="claim-premium"
+                            @onclick="@(() => ClaimPass(true))">CLAIM PREMIUM</button>
+                </div>
+            </div>
+
+            @* Tier track *@
+            <div class="flex items-center gap-2 text-center px-1">
+                <span class="t38-label text-[10px] text-white/40 w-8">Tier</span>
+                <span class="t38-label text-[10px] text-white/40 flex-1">Free</span>
+                <span class="t38-label text-[10px] flex-1" style="color: var(--t38-amber);">Premium</span>
+            </div>
+            @for (int i = 0; i < Global.PassFreeRewards.Length; i++)
+            {
+                int t = i;
+                <div class="flex items-center gap-2">
+                    <span class="t38-display text-white/80 w-8 text-center">@(t + 1)</span>
+                    <div class="t38-card tier-cell @TierClass(t, ClaimedFree) px-2 py-2 flex-1 text-center">@RewardChips(Global.PassFreeRewards[t])</div>
+                    <div class="t38-card tier-cell @TierClass(t, ClaimedPremium, premium:true) px-2 py-2 flex-1 text-center">@RewardChips(Global.PassPremiumRewards[t])</div>
+                </div>
+            }
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Timers.Timer? _timer;
+
+    private PlayerModel? Player => MetaplayService.PlayerModel;
+    private GlobalConfig Global => Player!.GameConfig.Global;
+
+    private long CurrentSeasonId => Player != null ? SeasonSchedule.CurrentSeasonId(MetaTime.Now, Global) : 0;
+    private bool PassCurrent => Player != null && Player.Pass.SeasonId == CurrentSeasonId;
+    private bool RankCurrent => Player != null && Player.Rank.SeasonId == CurrentSeasonId;
+
+    private long PassXp => PassCurrent ? Player!.Pass.Xp : 0;
+    private int  Tier => Global.PassTier(PassXp);
+    private int  ClaimedFree => PassCurrent ? Player!.Pass.ClaimedFree : 0;
+    private int  ClaimedPremium => PassCurrent ? Player!.Pass.ClaimedPremium : 0;
+    private bool PremiumOwned => PassCurrent && Player!.Pass.PremiumOwned;
+    private int  Srp => RankCurrent ? Player!.Rank.Points : 0;
+    private RankDivision Division => Global.RankDivisions[Global.DivisionIndex(Srp)];
+
+    private bool FreeClaimable => ClaimedFree < Global.PassFreeRewards.Length && ClaimedFree < Tier;
+    private bool PremiumClaimable => PremiumOwned && ClaimedPremium < Global.PassPremiumRewards.Length && ClaimedPremium < Tier;
+
+    private double TierProgressPct
+    {
+        get
+        {
+            if (Tier >= Global.PassFreeRewards.Length || Global.PassXpPerTier <= 0) return 100;
+            long into = PassXp % Global.PassXpPerTier;
+            return System.Math.Clamp((double)into / Global.PassXpPerTier * 100.0, 0, 100);
+        }
+    }
+
+    private string SeasonEndsLabel
+    {
+        get
+        {
+            if (Player == null) return "";
+            System.TimeSpan ts = (SeasonSchedule.SeasonEndsAt(CurrentSeasonId, Global) - MetaTime.Now).ToTimeSpan();
+            if (ts < System.TimeSpan.Zero) ts = System.TimeSpan.Zero;
+            return $"{(int)ts.TotalDays}d {ts.Hours}h";
+        }
+    }
+
+    private string TierClass(int tierIndex, int claimed, bool premium = false)
+    {
+        if (tierIndex < claimed) return "tier-claimed";
+        bool reachable = tierIndex < Tier && (!premium || PremiumOwned);
+        if (reachable) return "tier-ready";
+        return tierIndex < Tier ? "" : "tier-locked";
+    }
+
+    private int _burstKey;
+
+    private void ClaimPass(bool premium)
+    {
+        MetaplayService.ClaimPassReward(premium);
+        _burstKey++;
+    }
+
+    private RenderFragment RewardChips(PassReward r) => __builder =>
+    {
+        <div class="flex items-center justify-center gap-1.5 text-[11px] text-white/85" style="font-weight:600;">
+            @if (r.Coins > 0)  { <span style="color: var(--t38-amber);">🪙@r.Coins</span> }
+            @if (r.Gems > 0)   { <span style="color:#6fd2ff;">💎@r.Gems</span> }
+            @if (r.Shards > 0) { <span style="color:#b98bff;">🔩@r.Shards</span> }
+        </div>;
+    };
+
+    protected override void OnInitialized()
+    {
+        MetaplayService.OnStateChanged += OnStateChanged;
+        _timer = new System.Timers.Timer(1000) { AutoReset = true };
+        _timer.Elapsed += (_, _) => OnStateChanged();
+        _timer.Start();
+    }
+
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        MetaplayService.OnStateChanged -= OnStateChanged;
+        _timer?.Stop();
+        _timer?.Dispose();
+    }
+}

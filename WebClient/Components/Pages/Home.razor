@@ -1,0 +1,109 @@
+@page "/"
+@using System.Linq
+@using Game.Logic
+@using Metaplay.Core
+@using WebClientBase.Services
+@inject MetaplayClientService MetaplayService
+@implements IDisposable
+
+<PageTitle>38-0-20</PageTitle>
+
+<ConnectionStateContainer ConnectionState="MetaplayService.ConnectionState"
+                          ErrorMessage="@MetaplayService.ErrorMessage"
+                          IsLoading="Player == null"
+                          ConnectingMessage="Connecting…"
+                          LoadingMessage="Loading…"
+                          OnRetry="OnReconnect">
+
+    @* ===== Minimal menu: wordmark + Start / Join League (38-0.app style). Hidden while the league hub is open. ===== *@
+    <div class="t38-bg t38-pitch fixed inset-0 flex flex-col items-center justify-center @(_showLeague ? "hidden" : "")"
+         style="padding: calc(2rem + env(safe-area-inset-top)) 1.5rem calc(3rem + env(safe-area-inset-bottom));">
+
+        <div class="flex flex-col items-center text-center" style="max-width: 23rem; width: 100%;">
+
+            <span class="t38-pill text-[10px] px-3 py-1 mb-7">⚽ INTERNAL FAN LEAGUE</span>
+
+            <h1 class="t38-display leading-[0.85]" style="font-size: clamp(3.25rem, 20vw, 6.5rem); white-space: nowrap;">
+                38-0<span class="t38-hyphen">-</span>20
+            </h1>
+            <p class="text-white/85 mt-5" style="font-size: 1.05rem; font-weight: 600;">Draft your XI. Take on your friends.</p>
+            <p class="text-white/45 mt-1 mb-9" style="font-size: 0.95rem;">Up to 20 managers · 38 matchdays · go unbeaten.</p>
+
+            @if (InLeague)
+            {
+                <button class="t38-cta text-xl w-full py-4 mb-3 t38-tap"
+                        @onclick="@(() => OpenLeague("resume"))">CONTINUE LEAGUE&nbsp; →</button>
+                <button class="text-xs text-white/45 py-1" @onclick="@(() => OpenLeague("join"))">join a different league</button>
+            }
+            else
+            {
+                <button class="t38-cta text-xl w-full py-4 mb-3 t38-tap" data-testid="single-player"
+                        @onclick="@(() => OpenLeague("solo"))">SINGLE PLAYER&nbsp; →</button>
+                <button class="t38-cta-amber text-xl w-full py-4 mb-3 t38-tap"
+                        @onclick="@(() => OpenLeague("create"))">START A LEAGUE&nbsp; →</button>
+                <button class="t38-ghost text-xl w-full py-4 t38-tap"
+                        @onclick="@(() => OpenLeague("join"))">JOIN WITH A CODE</button>
+            }
+
+            <div class="flex items-center justify-center gap-7 mt-12">
+                <div class="flex flex-col items-center"><span class="t38-display text-2xl text-white">@LegendCountText</span><span class="t38-label text-[9px] text-white/40 mt-1">Legends</span></div>
+                <div class="flex flex-col items-center"><span class="t38-display text-2xl text-white">20</span><span class="t38-label text-[9px] text-white/40 mt-1">Teams</span></div>
+                <div class="flex flex-col items-center"><span class="t38-display text-2xl text-white">38</span><span class="t38-label text-[9px] text-white/40 mt-1">Matchdays</span></div>
+            </div>
+        </div>
+
+        <p class="text-[10px] text-white/25 absolute" style="bottom: calc(1rem + env(safe-area-inset-bottom));">
+            internal demo · real player names · not for public launch
+        </p>
+    </div>
+
+    @* ===== League surface (create / join / lobby / draft / standings) ===== *@
+    @if (_showLeague)
+    {
+        <LeagueHub InitialMode="@_leagueMode" OnClose="@(() => _showLeague = false)" />
+    }
+
+    @* ===== Persistent currency HUD (last in DOM so its Shop overlay paints above the hub's overlays) ===== *@
+    <TopBar Show="@_showLeague" />
+
+</ConnectionStateContainer>
+
+@code {
+    private bool _showLeague;
+    private string _leagueMode = "create";
+
+    private PlayerModel? Player => MetaplayService.PlayerModel;
+    private bool InLeague => Player?.League.InLeague == true;
+
+    // Live from the published config (the corpus is sheet-editable now — don't hardcode the count).
+    private string LegendCountText =>
+        Player?.GameConfig.Legends.Count is int n and > 0 ? n.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) : "—";
+
+    private void OpenLeague(string mode)
+    {
+        _leagueMode = mode;
+        _showLeague = true;
+    }
+
+    protected override void OnInitialized()
+    {
+        MetaplayService.OnStateChanged += OnStateChanged;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await MetaplayService.ConnectAsync();
+    }
+
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+
+    private async Task OnReconnect()
+    {
+        await MetaplayService.ConnectAsync();
+    }
+
+    public void Dispose()
+    {
+        MetaplayService.OnStateChanged -= OnStateChanged;
+    }
+}

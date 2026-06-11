@@ -1,0 +1,14 @@
+{
+  "name": "bake-globe",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Offline tool that bakes the stylized globe geometry (bloc fills, frontiers, coastlines, cities) into a static world.json consumed by the WebClient globe renderer. Contains the canonical globe generation math; runs once, output is checked in.",
+  "scripts": {
+    "bake": "node bake.mjs"
+  },
+  "dependencies": {
+    "earcut": "^3.0.1",
+    "topojson-client": "^3.1.0"
+  }
+}

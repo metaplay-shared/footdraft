@@ -1,0 +1,127 @@
+@using WebClientBase.Services
+
+@if (ConnectionState == ConnectionState.Disconnected || ConnectionState == ConnectionState.Connecting)
+{
+    @if (SplashImageUrl != null)
+    {
+        @SplashOverlay(ConnectingMessage)
+    }
+    else
+    {
+        <div class="t38-bg t38-pitch fixed inset-0 z-40 flex flex-col items-center justify-center">
+            <h1 class="t38-display text-5xl leading-none mb-4">38-0<span class="t38-hyphen">-</span>20</h1>
+            <div class="text-3xl fd-ball-spin">⚽</div>
+            <p class="text-sm mt-4" style="color: rgba(255,255,255,0.45);">@ConnectingMessage</p>
+        </div>
+    }
+}
+else if (ConnectionState == ConnectionState.Error)
+{
+    <div class="t38-bg fixed inset-0 z-40 flex flex-col items-center justify-center px-8">
+        <div class="t38-card px-8 py-8 flex flex-col items-center text-center" style="max-width: 20rem;">
+            <div class="text-5xl mb-4">\uD83D\uDFE5</div>
+            <h2 class="fd-display text-2xl mb-2" style="color: var(--fd-red);">@ErrorTitle</h2>
+            <p class="fd-cond text-xs mb-6" style="color: rgba(255,255,255,0.55);">@ErrorMessage</p>
+            <button class="t38-cta text-lg px-8 py-3" @onclick="OnRetry">
+                @RetryButtonText
+            </button>
+        </div>
+    </div>
+}
+else if (IsLoading)
+{
+    @if (SplashImageUrl != null)
+    {
+        @SplashOverlay(LoadingMessage)
+    }
+    else
+    {
+        <div class="t38-bg t38-pitch fixed inset-0 z-40 flex flex-col items-center justify-center">
+            <h1 class="t38-display text-5xl leading-none mb-4">38-0<span class="t38-hyphen">-</span>20</h1>
+            <div class="text-3xl fd-ball-spin">⚽</div>
+            <p class="text-sm mt-4" style="color: rgba(255,255,255,0.45);">@LoadingMessage</p>
+        </div>
+    }
+}
+else
+{
+    @ChildContent
+}
+
+@code {
+    /// <summary>
+    /// The current connection state.
+    /// </summary>
+    [Parameter]
+    public ConnectionState ConnectionState { get; set; }
+
+    /// <summary>
+    /// Error message to display when in error state.
+    /// </summary>
+    [Parameter]
+    public string? ErrorMessage { get; set; }
+
+    /// <summary>
+    /// Whether additional loading is in progress (e.g., waiting for player model).
+    /// </summary>
+    [Parameter]
+    public bool IsLoading { get; set; }
+
+    /// <summary>
+    /// Optional full-screen splash image shown behind the connecting/loading spinner.
+    /// When null, a plain centered spinner is used instead.
+    /// </summary>
+    [Parameter]
+    public string? SplashImageUrl { get; set; }
+
+    /// <summary>
+    /// Full-bleed splash backdrop with the spinner + message floated near the bottom,
+    /// mirroring the main-menu layout. Breaks out of the content column (fixed inset-0).
+    /// </summary>
+    private RenderFragment SplashOverlay(string message) =>@<div class="fixed inset-0 z-0 flex flex-col items-center justify-end px-6"
+         style="background-image: url('@SplashImageUrl'); background-size: cover; background-position: center; padding-bottom: calc(4rem + env(safe-area-inset-bottom));">
+        @* Subtle bottom gradient so the spinner + message read against the art. *@
+        <div class="absolute inset-0 pointer-events-none"
+             style="background: linear-gradient(to bottom, rgba(0,0,0,0) 55%, rgba(0,0,0,0.7) 100%);"></div>
+        <div class="relative flex flex-col items-center">
+            <div class="loading loading-spinner loading-md" style="color: var(--accent-blue);"></div>
+            <p class="mt-3 text-sm" style="color: rgba(255,255,255,0.85);">@message</p>
+        </div>
+    </div>;
+
+    /// <summary>
+    /// Content to display when connected and not loading.
+    /// </summary>
+    [Parameter]
+    public RenderFragment? ChildContent { get; set; }
+
+    /// <summary>
+    /// Callback when retry button is clicked.
+    /// </summary>
+    [Parameter]
+    public EventCallback OnRetry { get; set; }
+
+    /// <summary>
+    /// Message to show while connecting. Default: "Connecting to game server..."
+    /// </summary>
+    [Parameter]
+    public string ConnectingMessage { get; set; } = "Connecting to game server...";
+
+    /// <summary>
+    /// Message to show while loading. Default: "Loading..."
+    /// </summary>
+    [Parameter]
+    public string LoadingMessage { get; set; } = "Loading...";
+
+    /// <summary>
+    /// Title for error state. Default: "Connection Error"
+    /// </summary>
+    [Parameter]
+    public string ErrorTitle { get; set; } = "Connection Error";
+
+    /// <summary>
+    /// Text for retry button. Default: "Try Again"
+    /// </summary>
+    [Parameter]
+    public string RetryButtonText { get; set; } = "Try Again";
+}

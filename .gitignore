@@ -1,0 +1,25 @@
+# Visual Studio cache directory
+.vs/
+
+### Metaplay-related ignores
+
+# Build outputs
+**/out/
+**/bin/
+**/obj/
+
+# State dumps from checksum mismatches with server
+StateDump_*.txt
+
+# Metaplay Agent
+/.claude/metaplay-plugin-assets-dir
+/.claude/scheduled_tasks.lock
+/.claude/worktrees/
+**/node_modules/
+
+# Metaplay client storage
+**/PersistentData/
+**/TemporaryCache/
+
+# The Metaplay SDK is fetched by init-sdk.py, not committed.
+/MetaplaySDK/

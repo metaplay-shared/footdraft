@@ -1,0 +1,272 @@
+@using System.Linq
+@using Game.Logic
+@using Metaplay.Core
+@using WebClientBase.Services
+@inject MetaplayClientService MetaplayService
+@implements IDisposable
+
+@* In-match "stadium" view (portrait, phone-first), Supercell-styled. Two managers' drafted XIs play a single
+   football match: the scoreline is computed server-authoritatively at kick-off (MatchModel/MatchSim) and goals
+   are revealed minute-by-minute. Both clients observe the same synchronized model, so the match plays out
+   identically for both. RIVAL (top, red) vs YOU (bottom, blue), an LED scoreboard, a running clock, and a
+   live scorers feed. *@
+
+<style>
+    .fd-root {
+        --fd-red: #ff2e43; --fd-red-deep: #7a0d18;
+        --fd-blue: #2b8bff; --fd-blue-deep: #0b2f63;
+        --fd-gold: #ffd23f; --fd-gold-deep: #c8860a;
+        --fd-ink: #070b10;
+        background:
+            radial-gradient(115% 55% at 50% -10%, rgba(255,46,67,0.34), transparent 62%),
+            radial-gradient(115% 55% at 50% 110%, rgba(43,139,255,0.34), transparent 62%),
+            linear-gradient(180deg, #0a0f15 0%, #0c2418 50%, #0a0f15 100%),
+            var(--fd-ink);
+    }
+    .fd-display { font-family: 'Lilita One', system-ui, sans-serif; letter-spacing: 0.5px; }
+    .fd-cond { font-family: 'Barlow Condensed', system-ui, sans-serif; text-transform: uppercase; letter-spacing: 1.5px; }
+
+    .fd-banner-rival { background: linear-gradient(180deg, #ff5563, #c01526); box-shadow: 0 4px 0 var(--fd-red-deep), inset 0 1px 0 rgba(255,255,255,0.35); }
+    .fd-banner-you { background: linear-gradient(180deg, #3c97ff, #145fc4); box-shadow: 0 4px 0 var(--fd-blue-deep), inset 0 1px 0 rgba(255,255,255,0.35); }
+
+    .fd-scoreboard { background: linear-gradient(180deg, #0c1622, #060c14); border: 2px solid rgba(255,255,255,0.10); box-shadow: inset 0 2px 10px rgba(0,0,0,0.7), 0 6px 18px -8px #000; }
+    .fd-score-digit { color: var(--fd-gold); text-shadow: 0 0 14px rgba(255,210,63,0.6), 0 2px 0 var(--fd-gold-deep); }
+    .fd-clock { color: #8de89b; text-shadow: 0 0 10px rgba(120,229,155,0.5); }
+
+    .fd-rate { background: rgba(255,255,255,0.08); border-radius: 9999px; overflow: hidden; height: 0.4rem; }
+    .fd-rate > span { display:block; height:100%; }
+
+    @@keyframes fd-pop { 0%{transform:scale(0.6)} 55%{transform:scale(1.25)} 100%{transform:scale(1)} }
+    @@keyframes fd-goalflash { 0%{transform:scale(0.4) rotate(-6deg);opacity:0} 35%{transform:scale(1.25) rotate(3deg);opacity:1} 100%{transform:scale(1);opacity:1} }
+    @@keyframes fd-confetti { 0%{transform:translateY(-20vh) rotate(0);opacity:1} 100%{transform:translateY(85vh) rotate(540deg);opacity:0.9} }
+    @@keyframes fd-victory-in { 0%{transform:scale(0.7);opacity:0} 60%{transform:scale(1.08);opacity:1} 100%{transform:scale(1);opacity:1} }
+    @@keyframes fd-rowin { 0%{transform:translateX(-12px);opacity:0} 100%{transform:translateX(0);opacity:1} }
+    .fd-popped { animation: fd-pop 0.28s ease-out; }
+    .fd-goalflash { animation: fd-goalflash 0.5s cubic-bezier(.2,1.3,.4,1) both; }
+    .fd-confetti-pc { position:absolute; top:0; width:10px; height:14px; border-radius:2px; animation: fd-confetti 2.4s linear infinite; }
+    .fd-victory-card { animation: fd-victory-in 0.5s cubic-bezier(.2,1.3,.4,1) both; }
+    .fd-rowin { animation: fd-rowin 0.3s ease-out both; }
+</style>
+
+<div class="fd-root fixed inset-0 flex justify-center">
+    <div class="relative w-full max-w-md flex flex-col"
+         style="padding: calc(2.5rem + env(safe-area-inset-top)) 0.85rem calc(1rem + env(safe-area-inset-bottom));">
+
+        @if (Match != null && Self != null && Opponent != null && Match.Phase != MatchPhase.Starting)
+        {
+            @* ===== RIVAL zone (top) ===== *@
+            @Banner(Opponent, isSelf: false)
+
+            @* ===== Scoreboard + clock ===== *@
+            <div class="fd-scoreboard rounded-2xl mt-2 px-4 py-2 flex items-center justify-center gap-4">
+                <span class="text-3xl">@Opponent.Crest</span>
+                <div class="flex items-baseline gap-2">
+                    <span @key="@($"o{Opponent.Goals}")" class="fd-display fd-score-digit fd-popped text-5xl leading-none">@Opponent.Goals</span>
+                    <span class="fd-display text-2xl" style="color: rgba(255,255,255,0.5);">–</span>
+                    <span @key="@($"s{Self.Goals}")" class="fd-display fd-score-digit fd-popped text-5xl leading-none">@Self.Goals</span>
+                </div>
+                <span class="text-3xl">@Self.Crest</span>
+            </div>
+            <p class="fd-cond fd-clock text-center text-sm mt-1">
+                @(Match.Phase == MatchPhase.Ended ? "FULL TIME" : $"{Match.CurrentMinute}'")
+            </p>
+
+            @* ===== Pitch: line-rating compare + live scorers feed ===== *@
+            <div class="relative flex-1 min-h-0 overflow-y-auto my-2 flex flex-col gap-3">
+
+                @* line-rating compare (rival left / you right) *@
+                <div class="fd-card rounded-2xl px-3 py-2" style="background: linear-gradient(180deg, rgba(20,28,38,0.9), rgba(10,15,21,0.9)); border:2px solid rgba(255,255,255,0.08);">
+                    @RateRow("ATT", Opponent.Ratings.Attack,      Self.Ratings.Attack)
+                    @RateRow("MID", Opponent.Ratings.Midfield,    Self.Ratings.Midfield)
+                    @RateRow("DEF", Opponent.Ratings.Defence,     Self.Ratings.Defence)
+                    @RateRow("GK",  Opponent.Ratings.Goalkeeping, Self.Ratings.Goalkeeping)
+                </div>
+
+                @* scorers feed (latest on top) *@
+                <div class="flex flex-col gap-1.5">
+                    @if (RevealedCount == 0)
+                    {
+                        <p class="fd-cond text-center text-xs" style="color: rgba(255,255,255,0.4);">Kick off! No goals yet…</p>
+                    }
+                    else
+                    {
+                        @for (int i = RevealedCount - 1; i >= 0; i--)
+                        {
+                            MatchGoal g = Match.Goals[i];
+                            bool mine = g.Scorer == SelfId;
+                            <div @key="@($"g{i}")" class="fd-rowin flex items-center gap-2 px-3 py-1.5 rounded-xl"
+                                 style="background: @(mine ? "rgba(43,139,255,0.16)" : "rgba(255,46,67,0.16)");">
+                                <span class="fd-display text-sm" style="color:@(mine ? "var(--fd-blue)" : "var(--fd-red)");width:2.2rem;">@g.Minute'</span>
+                                <span class="text-lg">@(mine ? Self.Crest : Opponent.Crest)</span>
+                                <span class="fd-cond text-xs text-white/85 flex-1 truncate">@(mine ? Self.Name : Opponent.Name)</span>
+                                <span class="fd-display text-sm" style="color:var(--fd-gold);">⚽</span>
+                            </div>
+                        }
+                    }
+                </div>
+            </div>
+
+            @* ===== YOU zone (bottom) ===== *@
+            @Banner(Self, isSelf: true)
+
+            <button class="fd-cond w-full mt-3 py-2 rounded-xl text-xs" style="background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.5);"
+                    @onclick="@(() => MetaplayService.LeaveMatch())">
+                Leave match
+            </button>
+        }
+    </div>
+
+    @* ===== Kick-off briefing ===== *@
+    @if (Match != null && Match.Phase == MatchPhase.Starting && Self != null && Opponent != null)
+    {
+        <div class="fd-root fixed inset-0 z-20 flex flex-col items-center justify-center px-8">
+            <p class="fd-cond text-sm mb-6" style="color: rgba(255,255,255,0.5);">Kick off in @FormatSeconds(StartSecondsRemaining)…</p>
+            <div class="flex items-center gap-5">
+                <div class="flex flex-col items-center gap-1">
+                    <span class="text-6xl">@Opponent.Crest</span>
+                    <span class="fd-display text-lg text-white">@Opponent.Name</span>
+                    <span class="fd-cond text-[11px]" style="color: rgba(255,255,255,0.5);">OVR @Opponent.Overall</span>
+                    <span class="fd-cond text-[10px] px-2 py-0.5 rounded" style="background: var(--fd-red); color:#fff;">@(Opponent.IsBot ? "BOT" : "RIVAL")</span>
+                </div>
+                <span class="fd-display text-4xl" style="color: var(--fd-gold);">VS</span>
+                <div class="flex flex-col items-center gap-1">
+                    <span class="text-6xl">@Self.Crest</span>
+                    <span class="fd-display text-lg text-white">@Self.Name</span>
+                    <span class="fd-cond text-[11px]" style="color: rgba(255,255,255,0.5);">OVR @Self.Overall</span>
+                    <span class="fd-cond text-[10px] px-2 py-0.5 rounded" style="background: var(--fd-blue); color:#fff;">YOU</span>
+                </div>
+            </div>
+        </div>
+    }
+
+    @* ===== Full time: victory / defeat ===== *@
+    @if (Match != null && Match.Phase == MatchPhase.Ended && _showVictory && Self != null && Opponent != null)
+    {
+        bool selfWon = SelfId != EntityId.None && Match.Winner == SelfId;
+        <div class="fixed inset-0 z-30 flex flex-col items-center justify-center px-8"
+             style="background: @(selfWon
+                 ? "radial-gradient(circle at 50% 35%, rgba(255,210,63,0.22), rgba(7,11,16,0.96) 70%)"
+                 : "radial-gradient(circle at 50% 35%, rgba(120,130,140,0.12), rgba(5,7,10,0.97) 70%)");
+                    backdrop-filter: blur(3px); @(selfWon ? "" : "filter: grayscale(0.5);")">
+
+            @if (selfWon)
+            {
+                @for (int c = 0; c < 16; c++)
+                {
+                    <span class="fd-confetti-pc" style="@ConfettiStyle(c)"></span>
+                }
+            }
+
+            <div class="fd-victory-card flex flex-col items-center text-center">
+                <p class="fd-cond text-sm mb-1" style="color: rgba(255,255,255,0.5);">FULL TIME</p>
+                <div class="text-7xl mb-2">@(selfWon ? "🏆" : "🥀")</div>
+                <h2 class="fd-display text-5xl mb-3" style="color: @(selfWon ? "var(--fd-gold)" : "#9aa3ad"); text-shadow: @(selfWon ? "0 0 24px rgba(255,210,63,0.7)" : "none");">
+                    @(selfWon ? "VICTORY" : "DEFEAT")
+                </h2>
+                <div class="flex items-center gap-3 mb-6">
+                    <span class="text-3xl">@Self.Crest</span>
+                    <span class="fd-display text-4xl text-white">@Self.Goals – @Opponent.Goals</span>
+                    <span class="text-3xl">@Opponent.Crest</span>
+                </div>
+                <button class="fd-display px-10 py-3 rounded-2xl text-xl"
+                        style="background: linear-gradient(180deg, #ffe27a, #f5a623); color:#5a2d00; box-shadow: 0 6px 0 #b3600a, inset 0 2px 0 rgba(255,255,255,0.6);"
+                        @onclick="@(() => MetaplayService.LeaveMatch())">
+                    CONTINUE
+                </button>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private System.Timers.Timer? _uiTimer;
+    private System.Timers.Timer? _victoryTimer;
+    private readonly Random _viz = new Random();
+
+    private bool _showVictory;
+    private bool _victoryScheduled;
+    private const double VictoryHoldMs = 1500;
+
+    private PlayerModel? Player => MetaplayService.PlayerModel;
+    private MatchModel? Match => MetaplayService.Match;
+
+    private EntityId SelfId => Player?.PlayerId ?? EntityId.None;
+    private MatchSquadState? Self =>
+        Match != null && SelfId != EntityId.None && Match.Squads.TryGetValue(SelfId, out MatchSquadState? s) ? s : null;
+
+    private EntityId OpponentId =>
+        Match?.Squads.Keys.FirstOrDefault(id => id != SelfId) ?? EntityId.None;
+    private MatchSquadState? Opponent =>
+        Match != null && OpponentId != EntityId.None && Match.Squads.TryGetValue(OpponentId, out MatchSquadState? s) ? s : null;
+
+    private int RevealedCount => Match == null ? 0 : Math.Min(Match.RevealedGoals, Match.Goals.Count);
+
+    private double StartSecondsRemaining =>
+        Match == null ? 0 : Math.Max(0, (double)(MatchModel.StartDelayTicks - Match.CurrentTick) / MatchModel.TicksPerSecondConst);
+
+    private static string FormatSeconds(double seconds) => ((int)Math.Ceiling(seconds)).ToString();
+
+    private string ConfettiStyle(int i)
+    {
+        string[] colors = { "#ffd23f", "#2b8bff", "#ffffff", "#ff2e43", "#2ecc71" };
+        string color = colors[i % colors.Length];
+        double left = (i * 6.3 + 4) % 96;
+        double delay = (i % 6) * 0.22;
+        double dur = 2.0 + (i % 4) * 0.35;
+        return $"left:{left:0.#}%; background:{color}; animation-delay:{delay:0.##}s; animation-duration:{dur:0.##}s;";
+    }
+
+    // A team banner (RIVAL top / YOU bottom): crest, name, badge, overall.
+    private RenderFragment Banner(MatchSquadState squad, bool isSelf) => __builder =>
+    {
+        <div class="@(isSelf ? "fd-banner-you" : "fd-banner-rival") rounded-2xl px-3 py-2 flex items-center gap-2">
+            <span class="text-2xl">@squad.Crest</span>
+            <span class="fd-display text-base text-white flex-1 truncate" style="text-shadow: 0 1px 0 rgba(0,0,0,0.3);">@squad.Name</span>
+            <span class="fd-cond text-[11px] text-white/90">OVR @squad.Overall</span>
+            <span class="fd-cond text-[10px] px-2 py-0.5 rounded" style="background: rgba(0,0,0,0.25); color:#fff;">
+                @(isSelf ? "YOU" : (squad.IsBot ? "BOT" : "RIVAL"))
+            </span>
+        </div>
+    };
+
+    // One line-rating compare row: rival value (left, red) vs your value (right, blue), label in the middle.
+    private RenderFragment RateRow(string label, int rival, int self) => __builder =>
+    {
+        <div class="flex items-center gap-2 mb-1.5">
+            <span class="fd-display text-xs text-white w-6 text-right">@rival</span>
+            <div class="fd-rate flex-1" style="transform: scaleX(-1);"><span style="width:@(Math.Clamp(rival,0,99)*100/99)%; background: var(--fd-red);"></span></div>
+            <span class="fd-cond text-[10px] text-white/55 w-8 text-center">@label</span>
+            <div class="fd-rate flex-1"><span style="width:@(Math.Clamp(self,0,99)*100/99)%; background: var(--fd-blue);"></span></div>
+            <span class="fd-display text-xs text-white w-6">@self</span>
+        </div>
+    };
+
+    protected override void OnInitialized()
+    {
+        MetaplayService.OnStateChanged += OnStateChanged;
+        // Periodic re-render so the tick-driven clock + goal reveals show live for both clients.
+        _uiTimer = new System.Timers.Timer(150) { AutoReset = true };
+        _uiTimer.Elapsed += (_, _) => OnStateChanged();
+        _uiTimer.Start();
+    }
+
+    private void OnStateChanged()
+    {
+        if (Match != null && Match.Phase == MatchPhase.Ended && !_victoryScheduled)
+        {
+            _victoryScheduled = true;
+            _victoryTimer?.Dispose();
+            _victoryTimer = new System.Timers.Timer(VictoryHoldMs) { AutoReset = false };
+            _victoryTimer.Elapsed += (_, _) => { _showVictory = true; InvokeAsync(StateHasChanged); };
+            _victoryTimer.Start();
+        }
+        InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        MetaplayService.OnStateChanged -= OnStateChanged;
+        _uiTimer?.Stop(); _uiTimer?.Dispose();
+        _victoryTimer?.Stop(); _victoryTimer?.Dispose();
+    }
+}

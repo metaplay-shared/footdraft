@@ -1,0 +1,162 @@
+@using System.Linq
+@using Game.Logic
+@using Metaplay.Core
+@using WebClientBase.Services
+@inject MetaplayClientService MetaplayService
+@implements IDisposable
+
+@* Twice-daily Cup (Phase 3): grind Cup Tokens from matches during the live window, climb the milestone
+   reward track, and watch the clock until the Cup rolls over. Portrait, stadium-styled. *@
+
+<style>
+    .cup-node { border: 2px solid rgba(255,255,255,0.10); }
+    .cup-node-claimed { border-color: rgba(46,204,113,0.6); background: linear-gradient(180deg, rgba(46,204,113,0.16), rgba(10,15,21,0.9)); }
+    .cup-node-ready   { border-color: var(--fd-gold); box-shadow: 0 0 16px rgba(255,210,63,0.4); }
+    .cup-prog { background: rgba(255,255,255,0.10); border-radius: 9999px; overflow: hidden; height: 0.55rem; }
+    .cup-prog-fill { background: linear-gradient(90deg, #ffe27a, #f5a623); height: 100%; transition: width 0.3s; }
+</style>
+
+<div class="fd-stadium fixed inset-0 z-40 overflow-y-auto" style="padding: calc(1rem + env(safe-area-inset-top)) 1rem calc(2rem + env(safe-area-inset-bottom));">
+    <div class="w-full max-w-md mx-auto flex flex-col gap-3">
+        @if (Player == null)
+        {
+            <p class="fd-cond text-center text-white/60 mt-10">Loading…</p>
+        }
+        else
+        {
+            <div class="flex items-center justify-between">
+                <h1 class="fd-display text-3xl text-white">⚽ DICE CUP</h1>
+                <button class="fd-cond text-xs px-3 py-1.5 rounded-xl" style="background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.7);"
+                        @onclick="OnClose">✕ CLOSE</button>
+            </div>
+
+            @* Cup header: window timer + token total *@
+            <div class="fd-card rounded-2xl px-4 py-3 flex items-center justify-between">
+                <div>
+                    <p class="fd-cond text-[11px] text-white/50">@CupSchedule.CupLabel(CurrentCupId) · ENDS IN</p>
+                    <p class="fd-display text-2xl text-white">@TimeRemainingLabel</p>
+                </div>
+                <div class="text-right">
+                    <p class="fd-cond text-[11px] text-white/50">CUP TOKENS</p>
+                    <p class="fd-display text-2xl" style="color: var(--fd-gold);">🎟️ @Tokens</p>
+                </div>
+            </div>
+
+            @* Milestone track *@
+            <p class="fd-cond text-xs text-white/55 mt-1">Milestone rewards</p>
+            @for (int i = 0; i < Milestones.Length; i++)
+            {
+                int idx = i;
+                CupMilestone m = Milestones[idx];
+                bool claimed   = idx < Claimed;
+                bool claimable = idx == Claimed && Tokens >= m.Tokens;
+                double pct = m.Tokens > 0 ? System.Math.Clamp((double)Tokens / m.Tokens * 100.0, 0, 100) : 100;
+
+                <div class="fd-card cup-node @(claimed ? "cup-node-claimed" : claimable ? "cup-node-ready" : "") rounded-2xl px-4 py-3">
+                    <div class="flex items-center justify-between mb-1.5">
+                        <span class="fd-display text-white">@m.Tokens 🎟️</span>
+                        <span class="fd-cond text-[11px] text-white/70 flex gap-2">
+                            @if (m.Coins > 0)  { <span>🪙@m.Coins</span> }
+                            @if (m.Gems > 0)   { <span style="color:#6fd2ff;">💎@m.Gems</span> }
+                            @if (m.Shards > 0) { <span style="color:#b98bff;">🔩@m.Shards</span> }
+                        </span>
+                    </div>
+                    @if (claimed)
+                    {
+                        <p class="fd-cond text-[11px]" style="color:#2ecc71;">✓ CLAIMED</p>
+                    }
+                    else if (claimable)
+                    {
+                        <button class="fd-roll fd-display w-full py-2 rounded-xl text-sm" @onclick="@(() => MetaplayService.ClaimCupMilestone())">CLAIM</button>
+                    }
+                    else
+                    {
+                        <div class="cup-prog"><div class="cup-prog-fill" style="width: @(pct)%;"></div></div>
+                        <p class="fd-cond text-[10px] text-white/45 mt-1 text-right">@Tokens / @m.Tokens</p>
+                    }
+                </div>
+            }
+
+            @* Tickets *@
+            <div class="fd-card rounded-2xl px-4 py-3 flex items-center justify-between mt-1">
+                <div>
+                    <p class="fd-cond text-[11px] text-white/50">MATCH TICKETS</p>
+                    <p class="fd-display text-xl text-white">🎫 @AvailableTickets / @Global.MaxMatchTickets</p>
+                    @if (AvailableTickets < Global.MaxMatchTickets)
+                    {
+                        <p class="fd-cond text-[10px] text-white/45">next in @TicketRegenLabel</p>
+                    }
+                </div>
+                <button class="fd-btn-blue fd-display text-sm px-4 py-2 rounded-xl disabled:opacity-50"
+                        disabled="@(AvailableTickets >= Global.MaxMatchTickets || Player.Wallet.Get(CurrencyType.Gems) < Global.TicketRefillGemCost)"
+                        @onclick="@(() => MetaplayService.RefillTickets())">
+                    REFILL 💎@Global.TicketRefillGemCost
+                </button>
+            </div>
+
+            <p class="fd-cond text-[11px] text-white/45 text-center mt-1">Win matches to earn Cup Tokens · a new Cup starts every @Global.CupWindowHours h</p>
+
+            @* Dev helpers *@
+            <div class="flex gap-2 mt-1 opacity-70">
+                <button class="fd-cond text-[10px] flex-1 py-1.5 rounded-lg" style="background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.5);"
+                        @onclick="@(() => MetaplayService.GrantTicketsDebug())">refill 🎫 (dev)</button>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Timers.Timer? _timer;
+
+    private PlayerModel? Player => MetaplayService.PlayerModel;
+    private GlobalConfig Global => Player!.GameConfig.Global;
+    private CupMilestone[] Milestones => Global.CupMilestones;
+
+    private long CurrentCupId => Player != null ? CupSchedule.CurrentCupId(MetaTime.Now, Global) : 0;
+    private bool CupCurrent => Player != null && Player.Cup.CupId == CurrentCupId;
+    private int Tokens => CupCurrent ? Player!.Cup.Tokens : 0;
+    private int Claimed => CupCurrent ? Player!.Cup.ClaimedMilestones : 0;
+
+    private int AvailableTickets => Player != null ? Player.Tickets.Available(MetaTime.Now, Global) : 0;
+
+    private string TimeRemainingLabel
+    {
+        get
+        {
+            if (Player == null) return "";
+            System.TimeSpan ts = (CupSchedule.CupEndsAt(CurrentCupId, Global) - MetaTime.Now).ToTimeSpan();
+            if (ts < System.TimeSpan.Zero) ts = System.TimeSpan.Zero;
+            return $"{(int)ts.TotalHours}:{ts.Minutes:D2}:{ts.Seconds:D2}";
+        }
+    }
+
+    private string TicketRegenLabel
+    {
+        get
+        {
+            if (Player == null) return "";
+            long ms = Player.Tickets.MillisToNextRegen(MetaTime.Now, Global);
+            System.TimeSpan ts = System.TimeSpan.FromMilliseconds(ms);
+            return $"{ts.Minutes:D2}:{ts.Seconds:D2}";
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        MetaplayService.OnStateChanged += OnStateChanged;
+        _timer = new System.Timers.Timer(1000) { AutoReset = true };
+        _timer.Elapsed += (_, _) => OnStateChanged();
+        _timer.Start();
+    }
+
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        MetaplayService.OnStateChanged -= OnStateChanged;
+        _timer?.Stop();
+        _timer?.Dispose();
+    }
+}

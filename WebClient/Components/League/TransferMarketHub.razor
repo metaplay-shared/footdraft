@@ -1,0 +1,279 @@
+@using System
+@using System.Collections.Generic
+@using System.Linq
+@using Game.Logic
+@using Metaplay.Core
+@using WebClientBase.Services
+@inject MetaplayClientService MetaplayService
+@implements IDisposable
+
+@* TRANSFER MARKET — full-screen sub-hub (was a cramped inline panel in LeagueHub). Sell → search/sign flow with
+   big tappable cards. Signings charge the WALLET: OVR-scaled Coins, or Gems for an 85+ "marquee" star (gold
+   treatment). Any insufficient-funds moment routes to the Shop via MetaplayService.RequestShop(). *@
+
+<div class="t38-bg fixed inset-0 z-40 overflow-y-auto t38-under-hud" data-testid="transfer-panel"
+     style="padding-left: 1rem; padding-right: 1rem; padding-bottom: calc(9rem + env(safe-area-inset-bottom));">
+    <div class="w-full mx-auto flex flex-col gap-3" style="max-width: 30rem;">
+
+        @if (Player == null || Config == null || Snap == null)
+        {
+            <p class="text-center text-white/50 mt-10">Loading…</p>
+        }
+        else
+        {
+            <div class="flex items-center justify-between">
+                <h1 class="t38-display text-2xl text-white">🔁 TRANSFER MARKET</h1>
+                <button class="text-xs px-3 py-1.5 rounded-xl" style="background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.6);"
+                        @onclick="OnClose">✕ CLOSE</button>
+            </div>
+
+            <div class="flex items-center justify-between">
+                @if (Snap.TransferWindowOpen)
+                {
+                    <span class="t38-pill text-[10px] px-3 py-1" style="border-color: rgba(52,211,154,0.5); color: var(--t38-emerald);">● WINDOW OPEN</span>
+                }
+                else
+                {
+                    <span class="t38-pill text-[10px] px-3 py-1" style="border-color: rgba(255,255,255,0.2); color: rgba(255,255,255,0.5);">window closed · @WindowHoursText</span>
+                }
+                <span class="text-xs text-white/70">balance <span style="color:var(--t38-amber);font-weight:800;" data-testid="transfer-budget">🪙 @Coins.ToString("N0")</span></span>
+            </div>
+
+            @if (!Snap.TransferWindowOpen)
+            {
+                <div class="t38-card px-5 py-10 flex flex-col items-center text-center mt-2">
+                    <span class="text-5xl mb-3">🔒</span>
+                    <p class="t38-label text-xs text-white/55 mb-1">The window is closed</p>
+                    <p class="text-xs text-white/40">Come back when it reopens to strengthen your XI between matchdays.</p>
+                </div>
+            }
+            else
+            {
+                @* ---------- MY SQUAD: tap a player to put him up for sale ---------- *@
+                <div class="t38-card px-4 py-3">
+                    <div class="flex items-center justify-between mb-1">
+                        <span class="t38-label text-xs text-white/55">My squad</span>
+                        <span class="text-[11px] text-white/40">tap a player to sell</span>
+                    </div>
+                    <div class="flex flex-col gap-1">
+                        @foreach ((int slot, string legendId) in Snap.MyRoster.OrderBy(kv => kv.Key))
+                        {
+                            LegendPlayer? rostered = Lookup(legendId);
+                            if (rostered == null) { continue; }
+                            bool selected = _dropSlot == slot;
+                            <button class="flex items-center gap-3 px-3 py-2.5 rounded-xl text-left t38-tap" data-testid="transfer-drop"
+                                    style="@(selected ? "background:rgba(233,185,73,0.16);border:1px solid var(--t38-amber);" : "background:rgba(255,255,255,0.03);border:1px solid transparent;")"
+                                    @onclick="@(() => SelectDrop(slot))">
+                                <span class="w-9 h-9 rounded-lg flex items-center justify-center text-sm @PosBgClass(rostered.Position)" style="font-weight:800;">@rostered.Ovr</span>
+                                <span class="text-sm text-white/90 flex-1 truncate" style="font-weight:600;">@rostered.Name</span>
+                                <span class="text-[10px] px-2 py-1 rounded @PosBgClass(rostered.Position)" style="font-weight:700;">@PosShort(rostered.Position)</span>
+                                @if (selected) { <span class="text-[10px]" style="color:var(--t38-amber);font-weight:800;">SELLING</span> }
+                            </button>
+                        }
+                    </div>
+                </div>
+
+                @* ---------- MARKET: free agents for the freed slot's position ---------- *@
+                @if (_dropSlot is int dropSlot && RosterLegendAt(dropSlot) is { } dropping)
+                {
+                    <div class="t38-card px-4 py-3">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="t38-label text-xs text-white/55">Market · replacing @ShortName(dropping.Name)</span>
+                            <span class="text-[10px] px-2 py-1 rounded @PosBgClass(dropping.Position)" style="font-weight:700;">@PosShort(dropping.Position) only</span>
+                        </div>
+
+                        <div class="flex items-center gap-2 mb-2">
+                            <input @bind="_search" @bind:event="oninput" maxlength="30" placeholder="Search players…"
+                                   class="t38-input text-sm flex-1 py-2.5 px-3" data-testid="transfer-search" />
+                            <button class="text-[11px] px-3 py-2.5 rounded-xl t38-tap" data-testid="marquee-filter"
+                                    style="@(_marqueeOnly ? "background:rgba(233,185,73,0.2);border:1px solid var(--t38-amber);color:var(--t38-amber);font-weight:800;" : "background:rgba(255,255,255,0.05);border:1px solid var(--t38-line);color:rgba(255,255,255,0.6);")"
+                                    @onclick="@(() => _marqueeOnly = !_marqueeOnly)">⭐ @(Def.MarqueeMinOvr)+</button>
+                        </div>
+
+                        <div class="flex flex-col gap-1.5" style="max-height: 19rem; overflow-y: auto;">
+                            @foreach (LegendPlayer candidate in Candidates(dropping.Position))
+                            {
+                                bool picked = _addId == candidate.Id.Value;
+                                bool marquee = candidate.Ovr >= Def.MarqueeMinOvr;
+                                <button class="flex items-center gap-3 px-3 py-2.5 rounded-xl text-left t38-tap" data-testid="transfer-candidate"
+                                        style="@(picked ? "background:rgba(52,211,154,0.14);border:1px solid var(--t38-emerald);"
+                                                 : marquee ? "background:rgba(233,185,73,0.06);border:1px solid rgba(233,185,73,0.35);"
+                                                 : "background:rgba(255,255,255,0.03);border:1px solid transparent;")"
+                                        @onclick="@(() => _addId = picked ? null : candidate.Id.Value)">
+                                    <span class="w-9 h-9 rounded-lg flex items-center justify-center text-sm @PosBgClass(candidate.Position)" style="font-weight:800;">@candidate.Ovr</span>
+                                    <div class="flex-1 min-w-0">
+                                        <div class="text-sm text-white/90 truncate" style="font-weight:600;">@(marquee ? "⭐ " : "")@candidate.Name</div>
+                                        <div class="text-[10px] text-white/40 truncate">@candidate.Nation · @candidate.Club @candidate.Season</div>
+                                    </div>
+                                    <span class="text-xs" style="font-weight:800;color:var(--t38-amber);">🪙@CoinCostFor(candidate)</span>
+                                </button>
+                            }
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    <p class="text-[11px] text-white/40 text-center py-1">Select a player above to open the market for his position.</p>
+                }
+            }
+        }
+    </div>
+</div>
+
+@* ---------- CONFIRM SHEET: fixed to the bottom once an in/out pair is chosen ---------- *@
+@if (Snap != null && Snap.TransferWindowOpen && _dropSlot is int sheetSlot && RosterLegendAt(sheetSlot) is { } selling && _addId is string addId && Lookup(addId) is { } signing)
+{
+    long coinCost = CoinCostFor(signing);
+    bool marqueeEligible = signing.Ovr >= Def.MarqueeMinOvr;
+    long gemCost = marqueeEligible ? Def.MarqueeGemCostFor(signing.Ovr) : 0;
+    int delta = signing.Ovr - selling.Ovr;
+    <div class="fixed inset-x-0 bottom-0 z-[45]" style="padding: 0.75rem 1rem calc(0.9rem + env(safe-area-inset-bottom));
+         background: linear-gradient(180deg, rgba(7,16,11,0.7), rgba(7,16,11,0.97) 35%); backdrop-filter: blur(8px);">
+        <div class="w-full mx-auto flex flex-col gap-2" style="max-width: 30rem;">
+            @if (_burstKey > 0)
+            {
+                <div @key="_burstKey">
+                    <span class="t38-fly-coin" style="right: 5rem; bottom: 8rem;">🪙</span>
+                    <span class="t38-fly-coin" style="right: 6.5rem; bottom: 7rem;">🪙</span>
+                    <span class="t38-fly-coin" style="right: 4rem; bottom: 7.5rem;">🪙</span>
+                </div>
+            }
+            <div class="flex items-center justify-center gap-3 text-sm">
+                <span class="text-white/55">OUT <span style="font-weight:700;color:#ffb0ac;">@ShortName(selling.Name) @selling.Ovr</span></span>
+                <span class="text-white/40">→</span>
+                <span class="text-white/55">IN <span style="font-weight:700;color:var(--t38-emerald);">@ShortName(signing.Name) @signing.Ovr</span></span>
+                <span class="text-xs px-2 py-0.5 rounded-full" style="@(delta >= 0 ? "background:rgba(52,211,154,0.15);color:var(--t38-emerald);" : "background:rgba(224,86,79,0.15);color:#ffb0ac;");font-weight:800;">
+                    @(delta >= 0 ? "▲ +" : "▼ ")@delta OVR
+                </span>
+            </div>
+            @if (Coins >= coinCost)
+            {
+                <button class="t38-cta text-base w-full py-3.5 t38-tap" data-testid="confirm-transfer"
+                        @onclick="@(() => ConfirmSwap(selling.Id.Value, addId, payWithGems: false))">
+                    ✔ SIGN @ShortName(signing.Name).ToUpperInvariant() — 🪙 @coinCost
+                </button>
+            }
+            else
+            {
+                <button class="t38-cta-amber text-base w-full py-3.5 t38-tap" data-testid="confirm-transfer-shop"
+                        @onclick="@(() => MetaplayService.RequestShop())">
+                    🪙 @coinCost — NOT ENOUGH COINS · GET MORE →
+                </button>
+            }
+            @if (marqueeEligible)
+            {
+                @if (Gems >= gemCost)
+                {
+                    <button class="t38-marquee-btn t38-shine text-sm w-full py-3 t38-tap" data-testid="marquee-sign"
+                            @onclick="@(() => ConfirmSwap(selling.Id.Value, addId, payWithGems: true))">
+                        ⭐ MARQUEE SIGNING — 💎 @gemCost
+                    </button>
+                }
+                else
+                {
+                    <button class="t38-marquee-btn text-sm w-full py-3 t38-tap" style="filter: grayscale(0.3) brightness(0.85);" data-testid="marquee-sign-shop"
+                            @onclick="@(() => MetaplayService.RequestShop())">
+                        ⭐ MARQUEE 💎 @gemCost — GET GEMS →
+                    </button>
+                }
+            }
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private PlayerModel? Player => MetaplayService.PlayerModel;
+    private SharedGameConfig? Config => Player?.GameConfig;
+    private LeagueSnapshot? Snap => Player?.League.Snapshot;
+
+    private long Coins => Player?.Wallet.Get(CurrencyType.Coins) ?? 0;
+    private long Gems  => Player?.Wallet.Get(CurrencyType.Gems) ?? 0;
+
+    private int? _dropSlot;
+    private string? _addId;
+    private string _search = "";
+    private bool _marqueeOnly;
+    private int _burstKey;
+
+    private LeagueDefinition Def =>
+        Config != null && Config.LeagueDefinitions.TryGetValue(LeagueDefinitionId.FromString(LeagueDefinitionContent.DefaultId), out LeagueDefinition? def)
+            ? def! : LeagueDefinitionContent.Default;
+
+    private long CoinCostFor(LegendPlayer p) => Def.TransferCostFor(p.Ovr);
+
+    private string WindowHoursText =>
+        Def.TransferWindowDurationHours >= 24
+            ? "reopens next matchday"
+            : $"{Def.TransferWindowStartHourUtc:00}:00–{(Def.TransferWindowStartHourUtc + Def.TransferWindowDurationHours) % 24:00}:00 UTC daily";
+
+    private LegendPlayer? Lookup(string id) =>
+        Config != null && Config.Legends.TryGetValue(LegendId.FromString(id), out LegendPlayer? p) ? p : null;
+
+    private LegendPlayer? RosterLegendAt(int slot) =>
+        Snap != null && Snap.MyRoster.TryGetValue(slot, out string? id) ? Lookup(id!) : null;
+
+    // The shared draft pool (one entry per real player) — matches the server's, so a footballer is signable
+    // only while no team in the league holds him.
+    private List<LegendPlayer>? _pool;
+    private List<LegendPlayer> DraftPool =>
+        _pool ??= (Config != null ? LeagueDraftEngine.BuildDraftPool(Config.Legends.Values.ToList()) : new List<LegendPlayer>());
+
+    /// <summary> Free agents for the freed slot's position: not on any team (by name), best first, search/marquee-filtered, capped at 30. </summary>
+    private List<LegendPlayer> Candidates(Position pos)
+    {
+        List<LegendPlayer> list = new List<LegendPlayer>();
+        if (Config == null || Snap == null) return list;
+        HashSet<string> takenNames = new HashSet<string>(Snap.TakenNames);
+        string search = _search.Trim();
+        foreach (LegendPlayer p in DraftPool)
+        {
+            if (p.Position != pos) continue;
+            if (takenNames.Contains(p.Name)) continue;
+            if (_marqueeOnly && p.Ovr < Def.MarqueeMinOvr) continue;
+            if (search.Length > 0 && !p.Name.Contains(search, StringComparison.OrdinalIgnoreCase)) continue;
+            list.Add(p);
+        }
+        list.Sort((a, b) => b.Ovr.CompareTo(a.Ovr));
+        return list.Count > 30 ? list.GetRange(0, 30) : list;
+    }
+
+    private void SelectDrop(int slot)
+    {
+        _dropSlot = _dropSlot == slot ? null : slot;
+        _addId = null;
+        _search = "";
+    }
+
+    private void ConfirmSwap(string dropLegendId, string addLegendId, bool payWithGems)
+    {
+        MetaplayService.LeagueTransferSwap(dropLegendId, addLegendId, payWithGems);
+        _burstKey++; // coin burst toward the HUD
+        _dropSlot = null;
+        _addId = null;
+        _search = "";
+    }
+
+    private static string PosShort(Position p) => p switch { Position.GK => "GK", Position.DEF => "DEF", Position.MID => "MID", _ => "FWD" };
+    private static string PosBgClass(Position p) => p switch { Position.GK => "t38-pos-gk", Position.DEF => "t38-pos-def", Position.MID => "t38-pos-mid", _ => "t38-pos-fwd" };
+
+    private static string ShortName(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return name;
+        string[] parts = name.Split(' ');
+        return parts.Length > 1 ? parts[parts.Length - 1] : name;
+    }
+
+    protected override void OnInitialized()
+    {
+        MetaplayService.OnStateChanged += OnStateChanged;
+    }
+
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        MetaplayService.OnStateChanged -= OnStateChanged;
+    }
+}

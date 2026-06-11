@@ -1,0 +1,7 @@
+# Dependencies (also covered by the repo-root ignore; explicit here for the standalone tool).
+node_modules/
+
+# Cached world-atlas source data. Re-fetched on demand by bake.mjs; the version is pinned by the
+# URL in that script, so there's no need to vendor the multi-MB raw dataset. The baked output
+# (WebClient/wwwroot/globe/world.json) is what's committed and consumed at runtime.
+countries-110m.json

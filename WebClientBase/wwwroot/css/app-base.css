@@ -1,0 +1,113 @@
+/* Smooth transitions */
+button {
+    transition: all 0.15s ease;
+}
+
+button:active:not(:disabled) {
+    transform: scale(0.98);
+}
+
+button:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+/* Selection */
+::selection {
+    background: rgba(59, 130, 246, 0.3);
+}
+
+/* Blazor reconnect dialog */
+#components-reconnect-modal {
+    display: none;
+}
+
+#components-reconnect-modal.components-reconnect-show,
+#components-reconnect-modal.components-reconnect-rejecting {
+    display: block;
+}
+
+#components-reconnect-modal.components-reconnect-hide {
+    display: none;
+}
+
+#components-reconnect-modal.components-reconnect-failed,
+#components-reconnect-modal.components-reconnect-rejected {
+    display: block;
+}
+
+/* Show/hide reconnect content based on state */
+#components-reconnect-modal .reconnect-attempting {
+    display: flex;
+}
+
+#components-reconnect-modal .reconnect-failed {
+    display: none;
+}
+
+#components-reconnect-modal.components-reconnect-failed .reconnect-attempting,
+#components-reconnect-modal.components-reconnect-rejected .reconnect-attempting {
+    display: none;
+}
+
+#components-reconnect-modal.components-reconnect-failed .reconnect-failed,
+#components-reconnect-modal.components-reconnect-rejected .reconnect-failed {
+    display: flex;
+}
+
+/* Progress bar pulse animation */
+.progress-pulse {
+    animation: progress-fill var(--pulse-duration, 2s) linear infinite;
+}
+
+@keyframes progress-fill {
+    0% { width: 5%; }
+    95% { width: 100%; }
+    100% { width: 5%; }
+}
+
+/* Blazor error UI */
+#blazor-error-ui {
+    display: none;
+    position: fixed;
+    bottom: 0;
+    width: 100%;
+    padding: 0.75rem 1rem;
+    background: var(--accent-red, #ef4444);
+    color: white;
+    z-index: 1000;
+    font-size: 0.875rem;
+}
+
+#blazor-error-ui .dismiss {
+    cursor: pointer;
+    position: absolute;
+    right: 1rem;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+#blazor-error-ui .reload {
+    color: white;
+    text-decoration: underline;
+    margin-left: 0.5rem;
+}

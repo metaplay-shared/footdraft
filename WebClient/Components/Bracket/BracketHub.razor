@@ -1,0 +1,191 @@
+@using System.Linq
+@using Game.Logic
+@using Metaplay.Core
+@using WebClientBase.Services
+@inject MetaplayClientService MetaplayService
+@implements IDisposable
+
+@* Weekly marquee Bracket Cup (Phase 7): a 16-entrant single-elimination run — win 4 rounds (R16 → Final) to be
+   champion. Each round is a server-resolved strength-weighted dice duel vs a tougher bot. Portrait, stadium-styled. *@
+
+<style>
+    .br-node { border: 2px solid rgba(255,255,255,0.10); }
+    .br-done { border-color: rgba(46,204,113,0.6); background: linear-gradient(180deg, rgba(46,204,113,0.16), rgba(10,15,21,0.9)); }
+    .br-now  { border-color: var(--fd-gold); box-shadow: 0 0 16px rgba(255,210,63,0.4); }
+    .br-out  { opacity: 0.4; }
+</style>
+
+<div class="fd-stadium fixed inset-0 z-40 overflow-y-auto" style="padding: calc(1rem + env(safe-area-inset-top)) 1rem calc(2rem + env(safe-area-inset-bottom));">
+    <div class="w-full max-w-md mx-auto flex flex-col gap-3">
+        @if (Player == null)
+        {
+            <p class="fd-cond text-center text-white/60 mt-10">Loading…</p>
+        }
+        else
+        {
+            <div class="flex items-center justify-between">
+                <h1 class="fd-display text-3xl text-white">🏆 BRACKET CUP</h1>
+                <button class="fd-cond text-xs px-3 py-1.5 rounded-xl" style="background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.7);"
+                        @onclick="OnClose">✕ CLOSE</button>
+            </div>
+
+            <p class="fd-cond text-[11px] text-white/50 text-center">Weekly marquee · 16 managers · single elimination · new bracket in @WeekRemainingLabel</p>
+
+            @* Bracket ladder *@
+            @for (int i = 0; i < BracketCup.RoundsTotal; i++)
+            {
+                int r = i;
+                BracketRoundReward reward = Global.BracketRoundRewards[r];
+                string cls = RoundClass(r);
+                <div class="fd-card br-node @cls rounded-2xl px-4 py-3 flex items-center justify-between">
+                    <div>
+                        <p class="fd-display text-white">@BracketCup.RoundName(r)</p>
+                        <p class="fd-cond text-[11px] text-white/50">win reward</p>
+                    </div>
+                    <div class="flex items-center gap-2 fd-cond text-[12px] text-white/85">
+                        @if (reward.Coins > 0)  { <span style="color: var(--fd-gold);">🪙@reward.Coins</span> }
+                        @if (reward.Gems > 0)   { <span style="color:#6fd2ff;">💎@reward.Gems</span> }
+                        @if (reward.Shards > 0) { <span style="color:#b98bff;">🔩@reward.Shards</span> }
+                        @if (r < ClearedRounds) { <span style="color:#2ecc71;">✓</span> }
+                    </div>
+                </div>
+            }
+
+            @* State + action *@
+            <div class="fd-card rounded-2xl px-5 py-5 text-center mt-1">
+                @if (State == BracketState.Active)
+                {
+                    @if (_lastResult == 1)
+                    {
+                        <p class="fd-display text-xl mb-2" style="color:#2ecc71;">ROUND WON — advance!</p>
+                    }
+                    <p class="fd-cond text-xs text-white/50 mb-1">NOW PLAYING</p>
+                    <p class="fd-display text-2xl text-white mb-4">@BracketCup.RoundName(RoundIndex)</p>
+                    <button class="fd-roll fd-display text-xl px-10 py-3 rounded-2xl" @onclick="OnPlayRound">
+                        ▶ PLAY @BracketCup.RoundName(RoundIndex).ToUpperInvariant()
+                    </button>
+                }
+                else if (State == BracketState.Champion)
+                {
+                    <div class="text-6xl mb-2">👑</div>
+                    <p class="fd-display text-3xl mb-2" style="color: var(--fd-gold);">CHAMPION!</p>
+                    <p class="fd-cond text-xs text-white/50 mb-4">You won the bracket this week.</p>
+                    <button class="fd-btn-blue fd-display text-base px-8 py-2.5 rounded-2xl" @onclick="OnEnter">RUN AGAIN</button>
+                }
+                else
+                {
+                    @if (State == BracketState.Eliminated)
+                    {
+                        <div class="text-5xl mb-2">🥀</div>
+                        <p class="fd-display text-xl mb-1" style="color:#9aa3ad;">Knocked out</p>
+                        <p class="fd-cond text-xs text-white/50 mb-4">Best: @BestRoundLabel</p>
+                    }
+                    else
+                    {
+                        <div class="text-5xl mb-2">🏟️</div>
+                        <p class="fd-display text-xl text-white mb-1">Enter the bracket</p>
+                        <p class="fd-cond text-xs text-white/50 mb-4">Win 4 rounds to lift the cup. Your squad strength decides the odds.</p>
+                    }
+                    <button class="fd-roll fd-display text-xl px-10 py-3 rounded-2xl" @onclick="OnEnter">ENTER BRACKET</button>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Timers.Timer? _timer;
+    private int _lastResult; // 0 none, 1 won-round
+    private int _prevCleared = -1;
+
+    private PlayerModel? Player => MetaplayService.PlayerModel;
+    private GlobalConfig Global => Player!.GameConfig.Global;
+
+    private long CurrentWeek => Player != null ? BracketCup.CurrentWeekId(MetaTime.Now, Global) : 0;
+    private bool Current => Player != null && Player.Bracket.WeekId == CurrentWeek;
+    private BracketState State => Current ? Player!.Bracket.State : BracketState.None;
+    private int RoundIndex => Current ? Player!.Bracket.RoundIndex : 0;
+    // Rounds cleared so far (for the ✓ marks): if champion, all; else the current round index (active) or best+1 (out).
+    private int ClearedRounds => State switch
+    {
+        BracketState.Champion   => BracketCup.RoundsTotal,
+        BracketState.Active     => RoundIndex,
+        BracketState.Eliminated => System.Math.Max(0, (Current ? Player!.Bracket.BestRoundReached : -1) + 1),
+        _                       => 0,
+    };
+
+    private string BestRoundLabel
+    {
+        get
+        {
+            int best = Current ? Player!.Bracket.BestRoundReached : -1;
+            return best >= 0 ? BracketCup.RoundName(best) : "—";
+        }
+    }
+
+    private string RoundClass(int r)
+    {
+        if (r < ClearedRounds) return "br-done";
+        if (State == BracketState.Active && r == RoundIndex) return "br-now";
+        if (State == BracketState.Eliminated && r >= ClearedRounds) return "br-out";
+        return "";
+    }
+
+    private string WeekRemainingLabel
+    {
+        get
+        {
+            if (Player == null) return "";
+            long windowMs = (long)Global.BracketWindowDays * 24L * 60L * 60L * 1000L;
+            MetaTime endsAt = MetaTime.FromMillisecondsSinceEpoch((CurrentWeek + 1) * windowMs);
+            System.TimeSpan ts = (endsAt - MetaTime.Now).ToTimeSpan();
+            if (ts < System.TimeSpan.Zero) ts = System.TimeSpan.Zero;
+            return $"{(int)ts.TotalDays}d {ts.Hours}h";
+        }
+    }
+
+    private void OnEnter()
+    {
+        _lastResult = 0;
+        MetaplayService.EnterBracket();
+    }
+
+    private void OnPlayRound()
+    {
+        _prevCleared = ClearedRounds;
+        MetaplayService.PlayBracketRound();
+    }
+
+    protected override void OnInitialized()
+    {
+        MetaplayService.OnStateChanged += OnStateChanged;
+        _timer = new System.Timers.Timer(700) { AutoReset = true };
+        _timer.Elapsed += (_, _) =>
+        {
+            // Detect a round win (cleared count advanced since we tapped PLAY).
+            if (_prevCleared >= 0 && ClearedRounds > _prevCleared)
+            {
+                _lastResult = 1;
+                _prevCleared = -1;
+            }
+            else if (_prevCleared >= 0 && State == BracketState.Eliminated)
+            {
+                _lastResult = 0;
+                _prevCleared = -1;
+            }
+            OnStateChanged();
+        };
+        _timer.Start();
+    }
+
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        MetaplayService.OnStateChanged -= OnStateChanged;
+        _timer?.Stop();
+        _timer?.Dispose();
+    }
+}

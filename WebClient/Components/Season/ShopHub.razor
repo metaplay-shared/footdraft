@@ -1,0 +1,102 @@
+@using System.Linq
+@using Game.Logic
+@using WebClientBase.Services
+@inject MetaplayClientService MetaplayService
+@implements IDisposable
+
+@* Shop: gem packs (simulated IAP) + coin packs (gems → coins, the hard→soft bridge that funds transfers).
+   Mounted ONCE by the TopBar HUD at z-45 so it paints above every other overlay — any insufficient-funds
+   button anywhere can summon it via MetaplayService.RequestShop(). *@
+
+<div class="t38-bg fixed inset-0 z-[45] overflow-y-auto t38-under-hud" style="padding-left: 1rem; padding-right: 1rem; padding-bottom: calc(2rem + env(safe-area-inset-bottom));">
+    <div class="w-full max-w-md mx-auto flex flex-col gap-3">
+        @if (Player == null)
+        {
+            <p class="text-center text-white/50 mt-10">Loading…</p>
+        }
+        else
+        {
+            <div class="flex items-center justify-between">
+                <h1 class="t38-display text-2xl text-white">💎 SHOP</h1>
+                <button class="text-xs px-3 py-1.5 rounded-xl" style="background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.6);"
+                        @onclick="OnClose">✕ CLOSE</button>
+            </div>
+
+            @* ---------- COIN PACKS: gems → transfer money ---------- *@
+            <p class="t38-label text-xs text-white/55 mt-1">Coin packs · transfer money</p>
+            @for (int i = 0; i < Global.CoinProducts.Length; i++)
+            {
+                CoinProduct cp = Global.CoinProducts[i];
+                bool best = i == Global.CoinProducts.Length - 1;
+                bool affordable = Gems >= cp.GemCost;
+                @* Ribbon sits on an outer wrapper — .t38-marquee clips overflow (its shine sweep), so an
+                   absolutely-positioned child poking above the card edge would get cut off. *@
+                <div class="relative @(best ? "mt-2" : "")">
+                    @if (best)
+                    {
+                        <span class="t38-label text-[8px] px-2 py-0.5 rounded-full absolute -top-2 left-4 z-10" style="background:var(--t38-amber);color:#1a1303;">BEST VALUE</span>
+                    }
+                    <div class="@(best ? "t38-marquee" : "t38-card") px-4 py-3 flex items-center gap-3">
+                        <span class="text-3xl">🪙</span>
+                        <div class="flex-1">
+                            <p class="t38-display text-lg text-white">@cp.Coins.ToString("N0") coins</p>
+                            <p class="text-[10px] text-white/40">≈ @(cp.GemCost > 0 ? (cp.Coins / cp.GemCost) : 0) coins per gem</p>
+                        </div>
+                        <button class="@(affordable ? "t38-cta" : "t38-ghost") text-sm px-4 py-2.5 rounded-xl t38-tap" data-testid="coin-pack"
+                                @onclick="@(affordable ? () => MetaplayService.BuyCoinPack(cp.Id) : (Action)(() => _needGems = true))">
+                            💎 @cp.GemCost
+                        </button>
+                    </div>
+                </div>
+            }
+
+            @if (_needGems)
+            {
+                <p class="text-[11px] text-center" style="color:var(--t38-amber);">Not enough gems — grab a pack below 👇</p>
+            }
+
+            @* ---------- GEM PACKS: simulated IAP ---------- *@
+            <p class="t38-label text-xs text-white/55 mt-2">Gem packs</p>
+            @foreach (ShopProduct p in Global.ShopProducts)
+            {
+                <div class="t38-card px-4 py-3 flex items-center gap-3">
+                    <span class="text-3xl">💎</span>
+                    <div class="flex-1">
+                        <p class="t38-display text-lg text-white">@p.Gems gems</p>
+                    </div>
+                    <button class="t38-cta-amber text-sm px-4 py-2.5 rounded-xl t38-tap" data-testid="gem-pack"
+                            @onclick="@(() => MetaplayService.SimPurchase(p.Id))">
+                        @p.PriceLabel
+                    </button>
+                </div>
+            }
+
+            <p class="text-[10px] text-white/35 text-center mt-2 leading-relaxed">
+                Purchases are simulated for this demo (no real money).<br/>
+                A production build validates the store receipt via Metaplay In-App Purchases.
+            </p>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private PlayerModel? Player => MetaplayService.PlayerModel;
+    private GlobalConfig Global => Player!.GameConfig.Global;
+    private long Gems => Player?.Wallet.Get(CurrencyType.Gems) ?? 0;
+
+    private bool _needGems;
+
+    protected override void OnInitialized()
+    {
+        MetaplayService.OnStateChanged += OnStateChanged;
+    }
+
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        MetaplayService.OnStateChanged -= OnStateChanged;
+    }
+}

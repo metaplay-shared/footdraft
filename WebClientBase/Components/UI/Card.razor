@@ -1,0 +1,100 @@
+@namespace WebClientBase.Components.UI
+
+<div class="rounded-xl p-4 border @Class" style="background: var(--bg-card); border-color: var(--border-color); @Style">
+    @if (!string.IsNullOrEmpty(Title) || HeaderContent != null)
+    {
+        <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-2">
+                @if (!string.IsNullOrEmpty(Icon))
+                {
+                    <span class="text-lg">@Icon</span>
+                }
+                @if (!string.IsNullOrEmpty(Title))
+                {
+                    <h3 class="font-medium" style="color: var(--text-primary);">@Title</h3>
+                }
+                @HeaderContent
+            </div>
+            @if (BadgeContent != null || !string.IsNullOrEmpty(Badge))
+            {
+                <div>
+                    @if (BadgeContent != null)
+                    {
+                        @BadgeContent
+                    }
+                    else if (!string.IsNullOrEmpty(Badge))
+                    {
+                        <span class="text-xs px-1.5 py-0.5 rounded" style="background: var(--bg-hover); color: var(--text-secondary);">@Badge</span>
+                    }
+                </div>
+            }
+        </div>
+    }
+
+    <div>
+        @ChildContent
+    </div>
+
+    @if (FooterContent != null)
+    {
+        <div class="mt-3 pt-3" style="border-top: 1px solid var(--border-color);">
+            @FooterContent
+        </div>
+    }
+</div>
+
+@code {
+    /// <summary>
+    /// Card title.
+    /// </summary>
+    [Parameter]
+    public string? Title { get; set; }
+
+    /// <summary>
+    /// Icon (emoji) to display before title.
+    /// </summary>
+    [Parameter]
+    public string? Icon { get; set; }
+
+    /// <summary>
+    /// Simple text badge to display in header.
+    /// </summary>
+    [Parameter]
+    public string? Badge { get; set; }
+
+    /// <summary>
+    /// Custom header content (replaces title/icon if provided).
+    /// </summary>
+    [Parameter]
+    public RenderFragment? HeaderContent { get; set; }
+
+    /// <summary>
+    /// Custom badge content (replaces Badge if provided).
+    /// </summary>
+    [Parameter]
+    public RenderFragment? BadgeContent { get; set; }
+
+    /// <summary>
+    /// Main card content.
+    /// </summary>
+    [Parameter]
+    public RenderFragment? ChildContent { get; set; }
+
+    /// <summary>
+    /// Footer content (shown at bottom with top border).
+    /// </summary>
+    [Parameter]
+    public RenderFragment? FooterContent { get; set; }
+
+    /// <summary>
+    /// Additional CSS classes.
+    /// </summary>
+    [Parameter]
+    public string? Class { get; set; }
+
+    /// <summary>
+    /// Additional inline styles.
+    /// </summary>
+    [Parameter]
+    public string? Style { get; set; }
+}

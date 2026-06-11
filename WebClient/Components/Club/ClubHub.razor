@@ -1,0 +1,164 @@
+@using System.Linq
+@using Game.Logic
+@using Metaplay.Core
+@using WebClientBase.Services
+@inject MetaplayClientService MetaplayService
+@implements IDisposable
+
+@* Clubs + Club League (Phase 4): join/create a club, contribute Club Points from your matches each week, and
+   climb the weekly club standings. Portrait, stadium-styled. *@
+
+<style>
+    .club-row { border: 2px solid rgba(255,255,255,0.08); }
+    .club-row-me { border-color: var(--fd-gold); box-shadow: 0 0 14px rgba(255,210,63,0.35); }
+    .club-rank { width: 1.8rem; text-align: center; }
+</style>
+
+<div class="fd-stadium fixed inset-0 z-40 overflow-y-auto" style="padding: calc(1rem + env(safe-area-inset-top)) 1rem calc(2rem + env(safe-area-inset-bottom));">
+    <div class="w-full max-w-md mx-auto flex flex-col gap-3">
+        @if (Player == null)
+        {
+            <p class="fd-cond text-center text-white/60 mt-10">Loading…</p>
+        }
+        else
+        {
+            <div class="flex items-center justify-between">
+                <h1 class="fd-display text-3xl text-white">🛡️ CLUB</h1>
+                <button class="fd-cond text-xs px-3 py-1.5 rounded-xl" style="background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.7);"
+                        @onclick="OnClose">✕ CLOSE</button>
+            </div>
+
+            @if (Player.PlayerLevel < Global.MinManagerLevelForClubs)
+            {
+                <div class="fd-card rounded-2xl px-5 py-8 text-center">
+                    <div class="text-5xl mb-3">🔒</div>
+                    <p class="fd-display text-xl text-white mb-1">Clubs unlock at Lv @Global.MinManagerLevelForClubs</p>
+                    <p class="fd-cond text-xs text-white/50">You're Lv @Player.PlayerLevel — keep playing to unlock.</p>
+                </div>
+            }
+            else if (!Player.Club.InClub)
+            {
+                <div class="fd-card rounded-3xl px-6 py-7 flex flex-col items-center text-center">
+                    <div class="text-5xl mb-2">🛡️</div>
+                    <p class="fd-display text-xl text-white mb-1">Join a Club</p>
+                    <p class="fd-cond text-xs text-white/50 mb-5">Pool Club Points with members each week and climb the league. Type a name to join it — or create it if it's new.</p>
+                    <input @bind="_clubName" @bind:event="oninput" maxlength="20" placeholder="Club name"
+                           class="fd-display text-center text-lg w-full py-2 rounded-xl mb-3"
+                           style="background: rgba(0,0,0,0.35); color:#fff; border: 2px solid rgba(255,255,255,0.12);" />
+                    <button class="fd-roll fd-display text-lg w-full py-2.5 rounded-2xl disabled:opacity-50"
+                            disabled="@(string.IsNullOrWhiteSpace(_clubName))"
+                            @onclick="OnJoin">
+                        JOIN / CREATE
+                    </button>
+                </div>
+            }
+            else
+            {
+                ClubSnapshot snap = Player.Club.Snapshot;
+
+                @* Your club card *@
+                <div class="fd-card rounded-2xl px-4 py-3">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="fd-cond text-[11px] text-white/50">YOUR CLUB</p>
+                            <p class="fd-display text-2xl text-white">@Player.Club.Name</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="fd-cond text-[11px] text-white/50">LEAGUE RANK</p>
+                            <p class="fd-display text-2xl" style="color: var(--fd-gold);">@(snap.MyRank > 0 ? $"#{snap.MyRank}" : "—")</p>
+                        </div>
+                    </div>
+                    <div class="flex items-center justify-around mt-3 pt-3" style="border-top: 1px solid rgba(255,255,255,0.08);">
+                        <div class="text-center"><p class="fd-display text-lg" style="color: var(--fd-gold);">@snap.MyPoints</p><p class="fd-cond text-[10px] text-white/45">CLUB PTS</p></div>
+                        <div class="text-center"><p class="fd-display text-lg text-white">@MyContribution</p><p class="fd-cond text-[10px] text-white/45">YOUR PTS</p></div>
+                        <div class="text-center"><p class="fd-display text-lg text-white">@snap.MemberCount</p><p class="fd-cond text-[10px] text-white/45">MEMBERS</p></div>
+                    </div>
+                    <p class="fd-cond text-[10px] text-white/40 text-center mt-2">Week resets in @WeekRemainingLabel</p>
+                </div>
+
+                @* Standings *@
+                <p class="fd-cond text-xs text-white/55 mt-1">Club League · top @Global.ClubStandingsTopN</p>
+                @if (snap.Top.Count == 0)
+                {
+                    <p class="fd-cond text-xs text-white/40 text-center py-3">No standings yet — play a match to put your club on the board.</p>
+                }
+                else
+                {
+                    @for (int i = 0; i < snap.Top.Count; i++)
+                    {
+                        ClubStanding s = snap.Top[i];
+                        bool isMine = string.Equals(s.Name, Player.Club.Name, System.StringComparison.OrdinalIgnoreCase);
+                        <div class="fd-card club-row @(isMine ? "club-row-me" : "") rounded-xl px-3 py-2 flex items-center gap-2">
+                            <span class="fd-display club-rank @(i == 0 ? "" : "text-white/70")" style="@(i == 0 ? "color: var(--fd-gold);" : "")">@(i + 1)</span>
+                            <span class="fd-display text-white flex-1 truncate">@s.Name</span>
+                            <span class="fd-cond text-[11px] text-white/50">@s.Members 👤</span>
+                            <span class="fd-display" style="color: var(--fd-gold);">@s.Points</span>
+                        </div>
+                    }
+                }
+
+                <button class="fd-cond w-full mt-3 py-2 rounded-xl text-xs" style="background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.5);"
+                        @onclick="@(() => MetaplayService.LeaveClub())">
+                    Leave club
+                </button>
+            }
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Timers.Timer? _timer;
+    private string _clubName = "";
+    private int _ticks;
+
+    private PlayerModel? Player => MetaplayService.PlayerModel;
+    private GlobalConfig Global => Player!.GameConfig.Global;
+
+    private long MyContribution =>
+        Player != null && Player.Club.ContribWeekId == ClubWeek.CurrentWeekId(MetaTime.Now, Global)
+            ? Player.Club.ContribThisWeek : 0;
+
+    private string WeekRemainingLabel
+    {
+        get
+        {
+            if (Player == null) return "";
+            long weekId = ClubWeek.CurrentWeekId(MetaTime.Now, Global);
+            System.TimeSpan ts = (ClubWeek.WeekEndsAt(weekId, Global) - MetaTime.Now).ToTimeSpan();
+            if (ts < System.TimeSpan.Zero) ts = System.TimeSpan.Zero;
+            return $"{(int)ts.TotalDays}d {ts.Hours}h";
+        }
+    }
+
+    private void OnJoin()
+    {
+        MetaplayService.JoinClub(_clubName);
+        _clubName = "";
+    }
+
+    protected override void OnInitialized()
+    {
+        MetaplayService.OnStateChanged += OnStateChanged;
+        MetaplayService.RefreshClub();
+        _timer = new System.Timers.Timer(1000) { AutoReset = true };
+        _timer.Elapsed += (_, _) =>
+        {
+            // Periodically re-fetch the standings while the club screen is open.
+            if (++_ticks % 5 == 0)
+                MetaplayService.RefreshClub();
+            OnStateChanged();
+        };
+        _timer.Start();
+    }
+
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        MetaplayService.OnStateChanged -= OnStateChanged;
+        _timer?.Stop();
+        _timer?.Dispose();
+    }
+}

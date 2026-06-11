@@ -1,0 +1,113 @@
+@using System.Linq
+@using Game.Logic
+@using WebClientBase.Services
+@inject MetaplayClientService MetaplayService
+@implements IDisposable
+
+@* Cosmetics (Phase 7): buy manager avatars & dice skins with Gems and equip them. Pure vanity — never affects a
+   roll (the fairness story). Portrait, stadium-styled. *@
+
+<div class="fd-stadium fixed inset-0 z-40 overflow-y-auto" style="padding: calc(1rem + env(safe-area-inset-top)) 1rem calc(2rem + env(safe-area-inset-bottom));">
+    <div class="w-full max-w-md mx-auto flex flex-col gap-3">
+        @if (Player == null)
+        {
+            <p class="fd-cond text-center text-white/60 mt-10">Loading…</p>
+        }
+        else
+        {
+            <div class="flex items-center justify-between">
+                <h1 class="fd-display text-3xl text-white">✨ LOOKS</h1>
+                <button class="fd-cond text-xs px-3 py-1.5 rounded-xl" style="background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.7);"
+                        @onclick="OnClose">✕ CLOSE</button>
+            </div>
+
+            <div class="fd-card rounded-2xl px-4 py-2 flex items-center justify-center gap-2">
+                <span class="text-xl">💎</span><span class="fd-display text-lg text-white">@Player.Wallet.Get(CurrencyType.Gems)</span>
+            </div>
+
+            <p class="fd-cond text-xs text-white/55 mt-1">Manager avatars</p>
+            <div class="grid grid-cols-2 gap-2">
+                @foreach (CosmeticItem c in Items(CosmeticKind.Avatar))
+                {
+                    @CosmeticCard(c, avatar: true)
+                }
+            </div>
+
+            <p class="fd-cond text-xs text-white/55 mt-2">Dice skins</p>
+            <div class="grid grid-cols-2 gap-2">
+                @foreach (CosmeticItem c in Items(CosmeticKind.DiceSkin))
+                {
+                    @CosmeticCard(c, avatar: false)
+                }
+            </div>
+
+            <p class="fd-cond text-[10px] text-white/40 text-center mt-2">Cosmetics are vanity only — they never change a dice roll.</p>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Timers.Timer? _timer;
+
+    private PlayerModel? Player => MetaplayService.PlayerModel;
+
+    private IEnumerable<CosmeticItem> Items(CosmeticKind kind) =>
+        Player == null ? Enumerable.Empty<CosmeticItem>()
+                       : Player.GameConfig.Cosmetics.Values.Where(c => c.Kind == kind);
+
+    private bool IsEquipped(CosmeticItem c) =>
+        Player != null && (c.Kind == CosmeticKind.Avatar ? Player.Cosmetics.EquippedAvatar : Player.Cosmetics.EquippedDiceSkin) == c.Id;
+
+    private RenderFragment CosmeticCard(CosmeticItem c, bool avatar) => __builder =>
+    {
+        bool owned    = Player!.Cosmetics.Owns(c.Id);
+        bool equipped = IsEquipped(c);
+        bool canAfford = Player.Wallet.Get(CurrencyType.Gems) >= c.GemCost;
+
+        <div class="fd-card rounded-2xl px-3 py-3 flex flex-col items-center text-center @(equipped ? "" : "")"
+             style="@(equipped ? "border-color: var(--fd-gold); box-shadow: 0 0 12px rgba(255,210,63,0.4);" : "")">
+            @if (avatar)
+            {
+                <div class="text-4xl mb-1">@c.Glyph</div>
+            }
+            else
+            {
+                <div class="w-10 h-10 rounded-xl mb-1" style="background: @c.Glyph; box-shadow: inset 0 2px 0 rgba(255,255,255,0.6), 0 3px 0 rgba(0,0,0,0.3);"></div>
+            }
+            <span class="fd-display text-sm text-white">@c.Name</span>
+
+            @if (equipped)
+            {
+                <span class="fd-cond text-[10px] mt-1.5 px-3 py-1 rounded-lg" style="background: rgba(255,210,63,0.18); color: var(--fd-gold);">EQUIPPED</span>
+            }
+            else if (owned)
+            {
+                <button class="fd-btn-blue fd-display text-xs mt-1.5 px-4 py-1.5 rounded-lg" @onclick="@(() => MetaplayService.EquipCosmetic(c.Id))">EQUIP</button>
+            }
+            else
+            {
+                <button class="fd-roll fd-display text-xs mt-1.5 px-4 py-1.5 rounded-lg disabled:opacity-50" disabled="@(!canAfford)"
+                        @onclick="@(() => MetaplayService.BuyCosmetic(c.Id))">💎@c.GemCost</button>
+            }
+        </div>;
+    };
+
+    protected override void OnInitialized()
+    {
+        MetaplayService.OnStateChanged += OnStateChanged;
+        _timer = new System.Timers.Timer(1000) { AutoReset = true };
+        _timer.Elapsed += (_, _) => OnStateChanged();
+        _timer.Start();
+    }
+
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        MetaplayService.OnStateChanged -= OnStateChanged;
+        _timer?.Stop();
+        _timer?.Dispose();
+    }
+}

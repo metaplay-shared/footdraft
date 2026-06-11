@@ -1,0 +1,125 @@
+@using System.Linq
+@using Game.Logic
+@using Metaplay.Core
+@using WebClientBase.Services
+@inject MetaplayClientService MetaplayService
+@implements IDisposable
+
+@* Live "form sync" operator panel (Phase 6 — the headline LiveOps demo). Mark a real WC2026 player in-form and
+   their match die is bumped live, propagating to your next match with NO redeploy. In production this is a
+   dashboard admin action / game-config hot-update; here it's driven by a development action. *@
+
+<style>
+    .form-fire { box-shadow: 0 0 14px rgba(255,90,40,0.6); border-color: #ff7a3c !important; }
+</style>
+
+<div class="fd-stadium fixed inset-0 z-40 overflow-y-auto" style="padding: calc(1rem + env(safe-area-inset-top)) 1rem calc(2rem + env(safe-area-inset-bottom));">
+    <div class="w-full max-w-md mx-auto flex flex-col gap-3">
+        @if (Player == null || Team == null)
+        {
+            <p class="fd-cond text-center text-white/60 mt-10">Loading…</p>
+        }
+        else
+        {
+            <div class="flex items-center justify-between">
+                <h1 class="fd-display text-3xl text-white">⚡ LIVE FORM</h1>
+                <button class="fd-cond text-xs px-3 py-1.5 rounded-xl" style="background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.7);"
+                        @onclick="OnClose">✕ CLOSE</button>
+            </div>
+
+            <div class="fd-card rounded-2xl px-4 py-3">
+                <p class="fd-cond text-[11px] text-white/55 leading-relaxed">
+                    Real WC2026 player having a great day? Mark them <span style="color:#ff7a3c;">in-form</span> and their
+                    match die is bumped <b>live</b> — it shows up in your very next match, no redeploy. This is the
+                    LiveOps hot-update story: operator changes reality → game reacts in minutes.
+                </p>
+            </div>
+
+            <div class="flex items-center gap-2 mt-1">
+                <span class="text-2xl">@Team.FlagEmoji</span>
+                <span class="fd-display text-xl text-white">@Team.DisplayName</span>
+            </div>
+
+            @for (int slot = 0; slot < Team.Squad.Count; slot++)
+            {
+                int s = slot;
+                PlayerEntry entry = Team.Squad[s];
+                int delta = FormDelta(entry.Name);
+                int baseDie = BaseDie(s, entry);
+                int liveDie = FormUtil.BumpDieTier(baseDie, delta);
+
+                <div class="fd-card @(delta > 0 ? "form-fire" : "") rounded-2xl px-3 py-2.5 flex items-center gap-3">
+                    <div class="w-11 h-11 rounded-xl flex flex-col items-center justify-center shrink-0"
+                         style="background: linear-gradient(180deg,#fff,#c9d4e0); color:#0a0f15;">
+                        <span class="fd-display text-base leading-none">d@(liveDie)</span>
+                    </div>
+                    <div class="flex-1 min-w-0">
+                        <div class="flex items-center gap-2">
+                            <span class="fd-display text-white truncate">@entry.Name</span>
+                            @if (delta > 0) { <span class="fd-cond text-[10px] px-1.5 py-0.5 rounded" style="background:#ff7a3c; color:#fff;">🔥 IN-FORM +@delta</span> }
+                            @if (delta < 0) { <span class="fd-cond text-[10px] px-1.5 py-0.5 rounded" style="background:#3a4756; color:#cbd5e1;">▼ @delta</span> }
+                        </div>
+                        <span class="fd-cond text-[10px] text-white/45">base d@(baseDie)@(delta != 0 ? $" → live d{liveDie}" : "")</span>
+                    </div>
+                    <div class="flex gap-1">
+                        <button class="fd-cond text-sm px-2.5 py-1.5 rounded-lg" style="background: rgba(255,122,60,0.25); color:#ff9d6e;"
+                                @onclick="@(() => MetaplayService.ApplyForm(entry.Name, delta + 1))">🔥+</button>
+                        <button class="fd-cond text-sm px-2.5 py-1.5 rounded-lg" style="background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.6);"
+                                @onclick="@(() => MetaplayService.ApplyForm(entry.Name, delta - 1))">▼</button>
+                    </div>
+                </div>
+            }
+
+            @if (Player.FormView.Entries.Count > 0)
+            {
+                <button class="fd-cond w-full mt-2 py-2 rounded-xl text-xs" style="background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.5);"
+                        @onclick="@(() => MetaplayService.ClearForm())">
+                    Clear all form overrides (@Player.FormView.Entries.Count active)
+                </button>
+            }
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Timers.Timer? _timer;
+
+    private PlayerModel? Player => MetaplayService.PlayerModel;
+    private GlobalConfig Global => Player!.GameConfig.Global;
+
+    private TeamInfo? Team =>
+        Player?.SelectedTeamId != null && Player.GameConfig.Teams.TryGetValue(TeamId.FromString(Player.SelectedTeamId), out TeamInfo? t) ? t : null;
+
+    private int FormDelta(string name)
+    {
+        if (Player == null) return 0;
+        FormEntry? e = Player.FormView.Entries.FirstOrDefault(x => x.Name == name);
+        return e?.TierDelta ?? 0;
+    }
+
+    private int BaseDie(int slot, PlayerEntry entry)
+    {
+        int upgrade = Player!.SquadBook.UpgradeLevelOf(CardKeys.For(Team!.Id.Value, slot));
+        return TeamContent.DieSidesForRating(entry.Rating + upgrade * Global.RatingPerUpgradeLevel);
+    }
+
+    protected override void OnInitialized()
+    {
+        MetaplayService.OnStateChanged += OnStateChanged;
+        MetaplayService.RefreshForm();
+        _timer = new System.Timers.Timer(1500) { AutoReset = true };
+        _timer.Elapsed += (_, _) => OnStateChanged();
+        _timer.Start();
+    }
+
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        MetaplayService.OnStateChanged -= OnStateChanged;
+        _timer?.Stop();
+        _timer?.Dispose();
+    }
+}

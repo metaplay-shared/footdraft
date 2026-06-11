@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Dumps the code-defined game config content to per-tab CSV files in Metaplay sheet format, so the data can
+    be imported into the "Footdraft Game Config" Google Sheet (File → Import → Replace spreadsheet) and the
+    config becomes designer-editable from there.
+
+    Usage: dotnet run (project tools/sheet-export) with the output directory as the argument
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <LangVersion>Latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <RunWorkingDirectory>$(MSBuildStartupDirectory)</RunWorkingDirectory>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Same shape as tools/SerializerGen: the CodeAnalyzers source-generate the Metaplay integration type
+         info that MetaplayCore.InitializeForExternalApp needs to find the game types. -->
+    <ProjectReference Include="..\..\MetaplaySDK\Backend\CodeAnalyzers\Metaplay.CodeAnalyzers.csproj">
+      <OutputItemType>Analyzer</OutputItemType>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\MetaplaySDK\Backend\CodeAnalyzers.Shared\Metaplay.CodeAnalyzers.Shared.csproj">
+      <OutputItemType>Analyzer</OutputItemType>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\GameLogic\GameLogic.csproj" />
+  </ItemGroup>
+
+</Project>

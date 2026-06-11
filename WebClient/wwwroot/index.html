@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+
+<head>
+    <meta charset="utf-8" />
+    <!-- Full-screen, app-like behavior: lock zoom and cover notches/safe areas. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <!-- Minimal browser chrome when launched/added to home screen. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="38-0-20" />
+    <meta name="theme-color" content="#07100b" />
+
+    <!-- SEO + social preview (OpenGraph / Twitter). Absolute image URLs so crawlers resolve them. -->
+    <meta name="description" content="Draft your XI from 30 years of Premier League squads, take on up to 19 friends across a 38-matchday season, and try to go unbeaten. A turn-based shared-pool football draft." />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="38-0-20" />
+    <meta property="og:title" content="38-0-20 — draft your XI. Go unbeaten." />
+    <meta property="og:description" content="Spin a random club-season, draft legends into a valid formation, then play up to 19 friends over a 38-matchday season. Can you go 38-0?" />
+    <meta property="og:url" content="https://sweet-wasps-shop-quickly-public.p2-eu.metaplay.dev/" />
+    <meta property="og:image" content="https://sweet-wasps-shop-quickly-public.p2-eu.metaplay.dev/images/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="38-0-20 — draft your XI. Go unbeaten." />
+    <meta name="twitter:description" content="Spin a random club-season, draft legends into a valid formation, then play up to 19 friends over a 38-matchday season. Can you go 38-0?" />
+    <meta name="twitter:image" content="https://sweet-wasps-shop-quickly-public.p2-eu.metaplay.dev/images/og.png" />
+
+    <!-- PWA manifest: enables standalone (chrome-free) launch from the home screen. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- Home-screen icon on iOS. Absolute paths so they resolve to the site root regardless of the
+         current SPA route (a relative path can resolve against a sub-route and 404 / hit the SPA
+         fallback, which makes iOS fall back to the generated "M" tile). -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <base href="/" />
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <!-- Chunky display face for the in-match "stadium" UI (scoreboard, dice, GOAL!). -->
+    <link href="https://fonts.googleapis.com/css2?family=Lilita+One&family=Barlow+Condensed:wght@600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="_content/WebClientBase/css/app-base.css" />
+    <link rel="stylesheet" href="app.css" />
+    <link rel="icon" type="image/png" href="favicon.png" />
+    <!-- The document title and theme CSS variables are rendered into the head by the App component via HeadOutlet. -->
+    <title>38-0-20</title>
+</head>
+
+<body class="min-h-screen" style="background: #07100b;">
+    <div id="app">
+        <div style="position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; color: #a1a1aa; font-family: system-ui, sans-serif;">
+            Loading…
+        </div>
+    </div>
+
+    <div id="blazor-error-ui" data-nosnippet>
+        An unhandled error has occurred.
+        <a href="." class="reload">Reload</a>
+        <span class="dismiss">🗙</span>
+    </div>
+
+    <!-- Suppress the right-click / Android long-press context menu (CSS can't block this). -->
+    <script>
+        window.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    </script>
+    <script src="_framework/blazor.webassembly.js"></script>
+</body>
+
+</html>

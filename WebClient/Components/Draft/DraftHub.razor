@@ -1,0 +1,374 @@
+@using System.Collections.Generic
+@using System.Linq
+@using Game.Logic
+@using Metaplay.Core
+@using WebClientBase.Services
+@inject MetaplayClientService MetaplayService
+@implements IDisposable
+
+@* FOOTDRAFT spin-draft (P1c). Pick a formation, then SPIN a random Club·Era bucket per open slot and
+   draft a position-eligible legend into it. Live line ratings + chemistry update as you build. The spin
+   RNG runs server-side (cheat-proof); this hub just issues the actions and renders the resulting state. *@
+
+<style>
+    .dh-pitch {
+        background:
+            radial-gradient(120% 80% at 50% 0%, rgba(46,204,113,0.18), transparent 60%),
+            repeating-linear-gradient(180deg, rgba(255,255,255,0.04) 0 14px, rgba(255,255,255,0.0) 14px 28px),
+            linear-gradient(180deg, #0c2a1a, #0a1f14);
+        border: 2px solid rgba(255,255,255,0.08);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.10), 0 14px 38px -14px #000;
+    }
+    .dh-slot { transition: transform 0.08s; }
+    .dh-slot:active { transform: scale(0.95); }
+    .dh-open {
+        border: 2px dashed rgba(255,255,255,0.28);
+        background: rgba(255,255,255,0.03);
+    }
+    .dh-open-live { border-color: var(--fd-gold); box-shadow: 0 0 16px rgba(255,210,63,0.45); }
+    .dh-filled { border: 2px solid rgba(255,255,255,0.12); background: linear-gradient(180deg, rgba(24,34,46,0.96), rgba(12,18,25,0.96)); }
+    .dh-ovr { font-family: 'Lilita One', system-ui, sans-serif; }
+    .dh-bar { background: rgba(255,255,255,0.10); border-radius: 9999px; overflow: hidden; height: 0.5rem; }
+    .dh-bar > span { display:block; height:100%; transition: width 0.4s cubic-bezier(.2,1,.3,1); }
+    .dh-cand { transition: transform 0.08s; }
+    .dh-cand:active { transform: scale(0.96); }
+    .dh-pos-gk  { color:#ffd23f; } .dh-bg-gk  { background:linear-gradient(180deg,#ffd23f,#c8860a); color:#3a2600; }
+    .dh-pos-def { color:#6fb1ff; } .dh-bg-def { background:linear-gradient(180deg,#4ea0ff,#1d6fe0); color:#fff; }
+    .dh-pos-mid { color:#7ee59b; } .dh-bg-mid { background:linear-gradient(180deg,#48d368,#1f9d44); color:#04210f; }
+    .dh-pos-fwd { color:#ff8a8a; } .dh-bg-fwd { background:linear-gradient(180deg,#ff5563,#c01526); color:#fff; }
+</style>
+
+<div class="fd-stadium fixed inset-0 z-40 overflow-y-auto" style="padding: calc(1rem + env(safe-area-inset-top)) 1rem calc(2rem + env(safe-area-inset-bottom));">
+    <div class="w-full max-w-md mx-auto flex flex-col gap-3">
+
+        @if (Player == null || Config == null)
+        {
+            <p class="fd-cond text-center text-white/60 mt-10">Loading…</p>
+        }
+        else
+        {
+            @* Header *@
+            <div class="flex items-center justify-between">
+                <h1 class="fd-display text-3xl text-white">DRAFT YOUR XI</h1>
+                <button class="fd-cond text-xs px-3 py-1.5 rounded-xl" style="background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.7);"
+                        @onclick="OnClose">✕ CLOSE</button>
+            </div>
+
+            @if (Formation == null)
+            {
+                @* ---- Formation chooser ---- *@
+                <p class="fd-cond text-xs text-white/55 mt-1">Pick a formation to draft into</p>
+                <div class="grid grid-cols-2 gap-3 mt-1">
+                    @foreach (FormationInfo f in Formations)
+                    {
+                        string fid = f.Id.Value;
+                        <button class="fd-card rounded-2xl py-5 flex flex-col items-center dh-slot" @onclick="@(() => MetaplayService.ChooseFormation(fid))">
+                            <span class="fd-display text-3xl text-white">@f.DisplayName</span>
+                            <span class="fd-cond text-[10px] text-white/45 mt-1">@f.CountOf(Position.DEF) DEF · @f.CountOf(Position.MID) MID · @f.CountOf(Position.FWD) FWD</span>
+                        </button>
+                    }
+                </div>
+            }
+            else
+            {
+                @* ---- Formation chip row ---- *@
+                <div class="flex items-center gap-2 flex-wrap">
+                    @foreach (FormationInfo f in Formations)
+                    {
+                        string fid = f.Id.Value;
+                        bool sel = fid == Formation.Id.Value;
+                        <button class="fd-cond text-xs px-3 py-1.5 rounded-full @(sel ? "" : "opacity-60")"
+                                style="@(sel ? "background:linear-gradient(180deg,#ffe27a,#f5a623);color:#5a2d00;" : "background:rgba(255,255,255,0.08);color:#fff;")"
+                                @onclick="@(() => ChangeFormation(fid))">@f.DisplayName</button>
+                    }
+                    <button class="fd-cond text-[11px] px-3 py-1.5 rounded-full ml-auto" style="background:rgba(255,90,90,0.15);color:#ff9d9d;"
+                            data-testid="reset-draft" @onclick="@(() => MetaplayService.ResetDraft())">↻ RESET</button>
+                </div>
+
+                @* ---- Ratings + chemistry panel ---- *@
+                <div class="fd-card rounded-2xl px-4 py-3">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="fd-display text-white">SQUAD STRENGTH</span>
+                        <div class="flex items-center gap-2">
+                            <span class="fd-cond text-[11px] px-2 py-0.5 rounded-full" style="background:rgba(72,211,104,0.16);color:#7ee59b;">⚡ CHEM @(ChemPreview >= 0 ? "+" : "")@ChemPreview</span>
+                            <span class="fd-display text-2xl" style="color:var(--fd-gold);">@Overall</span>
+                        </div>
+                    </div>
+                    @RatingBar("ATT", Lines.Attack,      "linear-gradient(90deg,#ff5563,#ffb15b)")
+                    @RatingBar("MID", Lines.Midfield,    "linear-gradient(90deg,#48d368,#a6e84f)")
+                    @RatingBar("DEF", Lines.Defence,     "linear-gradient(90deg,#4ea0ff,#6fe6ff)")
+                    @RatingBar("GK",  Lines.Goalkeeping, "linear-gradient(90deg,#ffd23f,#fff0a8)")
+                    <p class="fd-cond text-[11px] text-white/45 mt-2 text-center" data-testid="drafted-count">@FilledCount / 11 drafted@(WarningText)</p>
+                </div>
+
+                @* ---- The pitch ---- *@
+                <div class="dh-pitch rounded-2xl px-3 py-4 flex flex-col gap-3">
+                    @PitchRow(Position.FWD)
+                    @PitchRow(Position.MID)
+                    @PitchRow(Position.DEF)
+                    @PitchRow(Position.GK)
+                </div>
+
+                @* ---- Action zone: spin / pick / complete ---- *@
+                @if (Draft.HasPendingOffer)
+                {
+                    <div class="fd-card fd-victory-pop rounded-2xl px-4 py-4 flex flex-col items-center">
+                        <span class="fd-cond text-[11px] text-white/50">YOU SPUN</span>
+                        <div class="fd-display text-2xl text-white text-center leading-tight mb-1">@Draft.PendingOffer.Label</div>
+                        <span class="fd-cond text-[11px] mb-3 @PosTextClass(OfferNeed)">PICK A @PosLabel(OfferNeed)</span>
+
+                        @if (OfferCandidates.Count == 0)
+                        {
+                            <p class="fd-cond text-xs text-white/50 mb-3 text-center">No @PosLabel(OfferNeed) available here — reroll for another club.</p>
+                        }
+                        else
+                        {
+                            <div class="grid grid-cols-1 gap-2 w-full mb-3">
+                                @foreach (LegendPlayer cand in OfferCandidates)
+                                {
+                                    string cid = cand.Id.Value;
+                                    <button class="fd-card dh-cand rounded-xl px-3 py-2.5 flex items-center gap-3 w-full" data-testid="candidate" @onclick="@(() => MetaplayService.PickFromOffer(cid))">
+                                        <span class="dh-ovr w-10 h-10 rounded-lg flex items-center justify-center text-lg @OvrBgClass(cand.Ovr)">@cand.Ovr</span>
+                                        <div class="flex-1 min-w-0 text-left">
+                                            <div class="fd-display text-white truncate">@cand.Name</div>
+                                            <div class="fd-cond text-[10px] text-white/45">@cand.Nation</div>
+                                        </div>
+                                        <span class="fd-cond text-[10px] px-2 py-1 rounded @PosBgClass(cand.Position)">@PosShort(cand.Position)</span>
+                                    </button>
+                                }
+                            </div>
+                        }
+
+                        @if (RerollsLeft > 0)
+                        {
+                            <button class="fd-btn-blue fd-display text-sm px-6 py-2 rounded-2xl" @onclick="@(() => MetaplayService.SpinForSlot(Draft.PendingOfferSlot))">
+                                ↻ REROLL (@RerollsLeft left)
+                            </button>
+                        }
+                    </div>
+                }
+                else if (!IsComplete)
+                {
+                    <button class="fd-roll fd-display text-3xl w-full py-4 rounded-2xl" data-testid="spin-btn" @onclick="@(() => SpinClick(FirstOpenSlot))">
+                        🎡 SPIN
+                    </button>
+                    <p class="fd-cond text-[11px] text-white/45 text-center -mt-1">next slot needs a <span class="@PosTextClass(NextOpenPos)">@PosLabel(NextOpenPos)</span> · tap any open slot to spin it</p>
+                }
+                else
+                {
+                    <div class="fd-card fd-victory-pop rounded-2xl px-4 py-5 flex flex-col items-center text-center">
+                        <div class="text-5xl mb-1 fd-float">🏆</div>
+                        <h2 class="fd-display text-2xl" style="color:var(--fd-gold);">XI COMPLETE</h2>
+                        <p class="fd-cond text-[11px] text-white/55 mt-1 mb-4">Overall @Overall · chemistry @(ChemPreview >= 0 ? "+" : "")@ChemPreview</p>
+                        <button class="fd-roll fd-display text-xl w-full py-3 rounded-2xl mb-2" @onclick="OnClose">⚽ DONE</button>
+                        <p class="fd-cond text-[10px] text-white/35">Matches will field this XI once the match sim lands (P2).</p>
+                    </div>
+                }
+            }
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private PlayerModel? Player => MetaplayService.PlayerModel;
+    private SharedGameConfig? Config => Player?.GameConfig;
+    private DraftedSquad Draft => Player!.Draft;
+
+    private IEnumerable<FormationInfo> Formations => Config?.Formations.Values ?? Enumerable.Empty<FormationInfo>();
+
+    private FormationInfo? Formation =>
+        Player != null && Config != null && Draft.HasFormation && Config.Formations.TryGetValue(Draft.Formation, out FormationInfo? f) ? f : null;
+
+    private LegendPlayer? Lookup(LegendId id) => Config != null && Config.Legends.TryGetValue(id, out LegendPlayer? p) ? p : null;
+
+    private List<LegendPlayer> PickedLegends()
+    {
+        List<LegendPlayer> list = new List<LegendPlayer>();
+        if (Player == null) return list;
+        foreach ((int _, LegendId id) in Draft.Picks)
+        {
+            LegendPlayer? p = Lookup(id);
+            if (p != null) list.Add(p);
+        }
+        return list;
+    }
+
+    private LineRatings Lines =>
+        Formation != null ? DraftEngine.ComputeLines(Draft, Formation, id => Lookup(id)!) : new LineRatings();
+
+    private int ChemPreview => DraftEngine.Chemistry(PickedLegends(), formation: null);
+
+    private int FilledCount => Player != null ? Draft.Picks.Count : 0;
+
+    private bool IsComplete => Formation != null && Draft.IsComplete(Formation);
+
+    // Overall = weighted blend of the four lines + a small chemistry contribution, clamped to 0..99.
+    private int Overall
+    {
+        get
+        {
+            LineRatings r = Lines;
+            int lineAvg = (r.Attack * 3 + r.Midfield * 3 + r.Defence * 3 + r.Goalkeeping) / 10;
+            return Math.Clamp(lineAvg + Math.Max(0, ChemPreview) / 4, 0, 99);
+        }
+    }
+
+    private int FirstOpenSlot
+    {
+        get
+        {
+            if (Formation == null) return -1;
+            for (int s = 0; s < Formation.Slots.Count; s++)
+                if (!Draft.IsSlotFilled(s)) return s;
+            return -1;
+        }
+    }
+
+    private int RerollsLeft => Math.Max(0, DraftEngine.DefaultRerollCap - Draft.RerollsUsed);
+
+    private Position OfferNeed =>
+        Formation != null && Draft.HasPendingOffer ? Formation.Slots[Draft.PendingOfferSlot] : Position.GK;
+
+    private Position NextOpenPos
+    {
+        get
+        {
+            int n = FirstOpenSlot;
+            return Formation != null && n >= 0 ? Formation.Slots[n] : Position.GK;
+        }
+    }
+
+    private List<LegendPlayer> OfferCandidates
+    {
+        get
+        {
+            List<LegendPlayer> list = new List<LegendPlayer>();
+            if (Player == null || Formation == null || !Draft.HasPendingOffer) return list;
+            Position need = Formation.Slots[Draft.PendingOfferSlot];
+            HashSet<string> picked = new HashSet<string>();
+            foreach ((int _, LegendId id) in Draft.Picks) picked.Add(id.Value);
+            foreach (LegendId cid in Draft.PendingOffer.CandidateIds)
+            {
+                if (picked.Contains(cid.Value)) continue;
+                LegendPlayer? p = Lookup(cid);
+                if (p != null && p.Position == need) list.Add(p);
+            }
+            return list;
+        }
+    }
+
+    private string WarningText
+    {
+        get
+        {
+            List<LegendPlayer> picked = PickedLegends();
+            if (picked.Count == 0) return "";
+            bool hasGk = picked.Any(p => p.Position == Position.GK);
+            int def = picked.Count(p => p.Position == Position.DEF);
+            if (!hasGk) return " · ⚠ no keeper";
+            if (def < 3) return " · ⚠ thin defence";
+            return "";
+        }
+    }
+
+    private void SpinClick(int slot)
+    {
+        if (slot < 0) return;
+        MetaplayService.SpinForSlot(slot);
+    }
+
+    private void ChangeFormation(string fid)
+    {
+        if (Formation != null && Formation.Id.Value == fid) return;
+        if (Draft.Picks.Count > 0)
+            MetaplayService.ResetDraft();   // picks may not fit the new shape — start fresh
+        MetaplayService.ChooseFormation(fid);
+    }
+
+    // ----- render helpers -----
+
+    private RenderFragment RatingBar(string label, int value, string fill) => @<div class="flex items-center gap-2 mb-1.5">
+        <span class="fd-cond text-[11px] text-white/55 w-9">@label</span>
+        <div class="dh-bar flex-1"><span style="width:@(Math.Clamp(value, 0, 99) * 100 / 99)%;background:@fill;"></span></div>
+        <span class="fd-display text-sm text-white w-7 text-right">@value</span>
+    </div>;
+
+    private RenderFragment PitchRow(Position pos) => @<div class="flex justify-center gap-2">
+        @foreach (int s in SlotsFor(pos))
+        {
+            bool filled = Draft.IsSlotFilled(s);
+            bool live = Draft.HasPendingOffer && Draft.PendingOfferSlot == s;
+            LegendPlayer? legend = null;
+            if (filled && Draft.Picks.TryGetValue(s, out LegendId? lid)) legend = Lookup(lid);
+            int slot = s;
+
+            if (filled && legend != null)
+            {
+                <div class="dh-filled dh-slot rounded-xl px-2 py-1.5 flex flex-col items-center" style="width:4.7rem;">
+                    <span class="dh-ovr text-sm @OvrTextClass(legend.Ovr)">@legend.Ovr</span>
+                    <span class="fd-cond text-[9px] text-white/85 truncate w-full text-center">@ShortName(legend.Name)</span>
+                    <span class="fd-cond text-[8px] @PosTextClass(pos)">@PosShort(pos)</span>
+                </div>
+            }
+            else
+            {
+                <button class="dh-open dh-slot @(live ? "dh-open-live" : "") rounded-xl flex flex-col items-center justify-center"
+                        style="width:4.7rem;height:3.6rem;" disabled="@(Draft.HasPendingOffer && !live)"
+                        @onclick="@(() => SpinClick(slot))">
+                    <span class="fd-display text-lg @(live ? "" : "text-white/40")" style="@(live ? "color:var(--fd-gold);" : "")">@(live ? "▾" : "＋")</span>
+                    <span class="fd-cond text-[8px] @PosTextClass(pos)">@PosShort(pos)</span>
+                </button>
+            }
+        }
+    </div>;
+
+    private List<int> SlotsFor(Position pos)
+    {
+        List<int> idx = new List<int>();
+        if (Formation == null) return idx;
+        for (int s = 0; s < Formation.Slots.Count; s++)
+            if (Formation.Slots[s] == pos) idx.Add(s);
+        return idx;
+    }
+
+    private static string PosShort(Position p) => p switch { Position.GK => "GK", Position.DEF => "DEF", Position.MID => "MID", _ => "FWD" };
+    private static string PosLabel(Position p) => p switch { Position.GK => "GOALKEEPER", Position.DEF => "DEFENDER", Position.MID => "MIDFIELDER", _ => "FORWARD" };
+    private static string PosTextClass(Position p) => p switch { Position.GK => "dh-pos-gk", Position.DEF => "dh-pos-def", Position.MID => "dh-pos-mid", _ => "dh-pos-fwd" };
+    private static string PosBgClass(Position p) => p switch { Position.GK => "dh-bg-gk", Position.DEF => "dh-bg-def", Position.MID => "dh-bg-mid", _ => "dh-bg-fwd" };
+
+    private static string OvrTextClass(int ovr) => ovr >= 90 ? "dh-pos-gk" : ovr >= 85 ? "dh-pos-def" : "text-white/80";
+    private static string OvrBgClass(int ovr) => ovr >= 90 ? "dh-bg-gk" : ovr >= 85 ? "dh-bg-def" : "dh-bg-mid";
+
+    private static string ShortName(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return name;
+        int sp = name.IndexOf(' ');
+        // Use the last word (surname) when it's a multi-word name; keeps the chip readable.
+        string[] parts = name.Split(' ');
+        return parts.Length > 1 ? parts[parts.Length - 1] : name;
+    }
+
+    private System.Timers.Timer? _repaint;
+
+    protected override void OnInitialized()
+    {
+        MetaplayService.OnStateChanged += OnStateChanged;
+        // The draft mutates client-predicted PlayerModel state; OnStateChanged can fire racily for predictions, so
+        // repaint on a short cadence too (mirrors LeagueHub) — guarantees the formation/offer/picks always show up
+        // promptly without depending on a server-confirm round-trip.
+        _repaint = new System.Timers.Timer(350) { AutoReset = true };
+        _repaint.Elapsed += (_, _) => InvokeAsync(StateHasChanged);
+        _repaint.Start();
+    }
+
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        MetaplayService.OnStateChanged -= OnStateChanged;
+        _repaint?.Stop();
+        _repaint?.Dispose();
+    }
+}

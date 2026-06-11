@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk.BlazorWebAssembly">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <!-- CS8632: Nullable annotation used outside #nullable context -->
+    <!-- CS8669: Nullable annotation in auto-generated code requires explicit #nullable directive -->
+    <NoWarn>$(NoWarn);CS8632;CS8669</NoWarn>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>Latest</LangVersion>
+    <!-- Interpreted WASM only; AOT is out of scope. Single-threaded browser runtime. -->
+    <RunAOTCompilation>false</RunAOTCompilation>
+    <WasmEnableThreads>false</WasmEnableThreads>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.*" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="10.0.*" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The Metaplay source generators. Required so this (the entry) assembly carries the generated integration
+         metadata that IntegrationAssembly.FindRoots() reads at startup; its reference graph then reaches GameLogic. -->
+    <ProjectReference Include="..\MetaplaySDK\Backend\CodeAnalyzers\Metaplay.CodeAnalyzers.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <OutputItemType>Analyzer</OutputItemType>
+    </ProjectReference>
+    <ProjectReference Include="..\MetaplaySDK\Backend\CodeAnalyzers.Shared\Metaplay.CodeAnalyzers.Shared.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <OutputItemType>Analyzer</OutputItemType>
+    </ProjectReference>
+    <!-- Shared game-logic assembly (the SharedCode types). Referenced as an assembly (not source-included) so the
+         pre-built serializer's assembly identity matches at runtime. The MetaplayWebAssembly global property must be
+         passed on the command line (e.g. dotnet build -p:MetaplayWebAssembly=true) so it propagates across the whole
+         WebClient -> GameLogic/WebClientBase -> Metaplay.Client graph; the AdditionalProperties below is only a hint. -->
+    <ProjectReference Include="..\GameLogic\GameLogic.csproj">
+      <AdditionalProperties>MetaplayWebAssembly=true</AdditionalProperties>
+    </ProjectReference>
+    <ProjectReference Include="..\WebClientBase\WebClientBase.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The pre-built serializer assembly (mono-wasm cannot generate one at runtime). Regenerate it with the
+         SerializerGen tool whenever [MetaSerializable] types change (see README for the command). -->
+    <Reference Include="Metaplay.Generated.WebAssembly">
+      <HintPath>Serializer\Metaplay.Generated.WebAssembly.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,25 @@
+# Configure schema to use.
+# yaml-language-server: $schema=MetaplaySDK/projectConfigSchema.json
+$schema: "MetaplaySDK/projectConfigSchema.json"
+
+# Configure project.
+projectID: footdraft
+buildRootDir: .
+sdkRootDir: MetaplaySDK
+backendDir: Backend
+sharedCodeDir: SharedCode
+unityProjectDir: . # does not exist!
+
+# Specify .NET runtime version to build project for, only '<major>.<minor>'.
+dotnetRuntimeVersion: "10.0"
+
+# Specify Helm chart versions to use for server and bot deployments.
+serverChartVersion: 0.9.1
+botClientChartVersion: 0.4.2
+
+# Customize Metaplay features used in the game.
+features:
+  # Configure LiveOps Dashboard.
+  dashboard:
+    useCustom: true
+    rootDir: Backend/Dashboard

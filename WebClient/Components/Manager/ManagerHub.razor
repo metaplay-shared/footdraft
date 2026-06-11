@@ -1,0 +1,175 @@
+@using System.Linq
+@using Game.Logic
+@using Metaplay.Core
+@using WebClientBase.Services
+@inject MetaplayClientService MetaplayService
+@implements IDisposable
+
+@* Manager hub (Phase 1): wallet, manager level/XP, national-team selection, and the squad of five
+   cards you can upgrade with Coins + Shards. Upgrading bumps a card's rating, which can grow its die
+   (d6 → d8 → d10) — the "build your dice pool" meta. Portrait phone-first, stadium-styled. *@
+
+<style>
+    .mh-coin { color: var(--fd-gold); }
+    .mh-gem  { color: #6fd2ff; }
+    .mh-shard{ color: #b98bff; }
+    .mh-xpbar { background: rgba(255,255,255,0.10); border-radius: 9999px; overflow: hidden; height: 0.5rem; }
+    .mh-xpfill { background: linear-gradient(90deg, #ffe27a, #f5a623); height: 100%; transition: width 0.3s; }
+    .mh-team { border: 2px solid transparent; transition: transform 0.07s; }
+    .mh-team:active { transform: scale(0.96); }
+    .mh-team-sel { border-color: var(--fd-gold); box-shadow: 0 0 14px rgba(255,210,63,0.45); }
+    .mh-die { background: linear-gradient(180deg,#fff,#c9d4e0); color:#0a0f15; box-shadow: 0 3px 0 rgba(0,0,0,0.3), inset 0 2px 0 rgba(255,255,255,0.9); }
+    .mh-pip { width: 0.4rem; height: 0.4rem; border-radius: 9999px; }
+</style>
+
+<div class="fd-stadium fixed inset-0 z-40 overflow-y-auto" style="padding: calc(1rem + env(safe-area-inset-top)) 1rem calc(2rem + env(safe-area-inset-bottom));">
+    <div class="w-full max-w-md mx-auto flex flex-col gap-3">
+
+        @if (Player == null)
+        {
+            <p class="fd-cond text-center text-white/60 mt-10">Loading…</p>
+        }
+        else
+        {
+            @* Header: title + close *@
+            <div class="flex items-center justify-between">
+                <h1 class="fd-display text-3xl text-white">MY SQUAD</h1>
+                <button class="fd-cond text-xs px-3 py-1.5 rounded-xl" style="background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.7);"
+                        @onclick="OnClose">✕ CLOSE</button>
+            </div>
+
+            @* Wallet *@
+            <div class="fd-card rounded-2xl px-4 py-3 flex items-center justify-around">
+                <div class="flex items-center gap-1.5"><span class="text-xl mh-coin">🪙</span><span class="fd-display text-lg text-white">@Wallet(CurrencyType.Coins)</span></div>
+                <div class="flex items-center gap-1.5"><span class="text-xl mh-gem">💎</span><span class="fd-display text-lg text-white">@Wallet(CurrencyType.Gems)</span></div>
+                <div class="flex items-center gap-1.5"><span class="text-xl mh-shard">🔩</span><span class="fd-display text-lg text-white">@Wallet(CurrencyType.Shards)</span></div>
+            </div>
+
+            @* Manager level + XP *@
+            <div class="fd-card rounded-2xl px-4 py-3">
+                <div class="flex items-center justify-between mb-1.5">
+                    <span class="fd-display text-white">Manager Lv @Player.PlayerLevel</span>
+                    <span class="fd-cond text-[11px] text-white/55">@Player.Progression.MatchesWon W · @Player.Progression.MatchesPlayed P · streak @Player.Progression.CurrentWinStreak</span>
+                </div>
+                <div class="mh-xpbar"><div class="mh-xpfill" style="width: @(XpPercent)%;"></div></div>
+                <p class="fd-cond text-[10px] text-white/45 mt-1 text-right">@XpLabel</p>
+            </div>
+
+            @* Team selector *@
+            <p class="fd-cond text-xs text-white/55 mt-1">Choose your nation</p>
+            <div class="grid grid-cols-4 gap-2">
+                @foreach (TeamInfo team in Teams)
+                {
+                    bool sel = team.Id.Value == Player.SelectedTeamId;
+                    <button class="fd-card mh-team @(sel ? "mh-team-sel" : "") rounded-xl py-2 flex flex-col items-center"
+                            @onclick="@(() => MetaplayService.SelectTeam(team.Id.Value))">
+                        <span class="text-2xl">@team.FlagEmoji</span>
+                        <span class="fd-cond text-[9px] text-white/70 mt-0.5 truncate w-full text-center px-0.5">@team.Id.Value</span>
+                    </button>
+                }
+            </div>
+
+            @* Squad of the selected team *@
+            @if (SelectedTeam != null)
+            {
+                <div class="flex items-center gap-2 mt-1">
+                    <span class="text-2xl">@SelectedTeam.FlagEmoji</span>
+                    <span class="fd-display text-xl text-white">@SelectedTeam.DisplayName</span>
+                </div>
+
+                @for (int slot = 0; slot < SelectedTeam.Squad.Count; slot++)
+                {
+                    int s = slot;
+                    PlayerEntry entry = SelectedTeam.Squad[s];
+                    int level = Player.SquadBook.UpgradeLevelOf(CardKeys.For(SelectedTeam.Id.Value, s));
+                    int sides = DieSides(entry.Rating, level);
+                    bool maxed = level >= Global.MaxCardUpgradeLevel;
+                    long coinCost = Global.CardUpgradeCoinCost(level);
+                    long shardCost = Global.CardUpgradeShardCost(level);
+                    bool affordable = !maxed && Player.Wallet.CanAfford(CurrencyType.Coins, coinCost) && Player.Wallet.CanAfford(CurrencyType.Shards, shardCost);
+                    bool willBump = !maxed && DieSides(entry.Rating, level + 1) > sides;
+
+                    <div class="fd-card rounded-2xl px-3 py-2.5 flex items-center gap-3">
+                        <div class="mh-die w-11 h-11 rounded-xl flex flex-col items-center justify-center shrink-0">
+                            <span class="fd-display text-lg leading-none">d@(sides)</span>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <div class="flex items-center gap-2">
+                                <span class="fd-display text-white truncate">@entry.Name</span>
+                                <span class="fd-cond text-[9px] px-1.5 py-0.5 rounded" style="background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.6);">LV @level</span>
+                            </div>
+                            <div class="flex items-center gap-2 mt-1">
+                                <span class="fd-cond text-[10px] text-white/45">RATING @(entry.Rating + level * Global.RatingPerUpgradeLevel)</span>
+                                @if (willBump) { <span class="fd-cond text-[10px]" style="color: var(--fd-gold);">▲ d@(DieSides(entry.Rating, level + 1)) next</span> }
+                            </div>
+                        </div>
+                        @if (maxed)
+                        {
+                            <span class="fd-cond text-[10px] px-2 py-1 rounded-lg" style="background: rgba(255,210,63,0.15); color: var(--fd-gold);">MAX</span>
+                        }
+                        else
+                        {
+                            <button class="fd-roll rounded-xl px-3 py-2 flex flex-col items-center disabled:opacity-50" disabled="@(!affordable)"
+                                    @onclick="@(() => MetaplayService.UpgradeCard(SelectedTeam.Id.Value, s))">
+                                <span class="fd-display text-xs leading-none">UPGRADE</span>
+                                <span class="fd-cond text-[9px] mt-0.5">🪙@coinCost · 🔩@shardCost</span>
+                            </button>
+                        }
+                    </div>
+                }
+            }
+
+            @* Dev helper: top up currency for testing the economy (server runs it only in development). *@
+            <div class="flex gap-2 mt-2 opacity-70">
+                <button class="fd-cond text-[10px] flex-1 py-1.5 rounded-lg" style="background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.5);"
+                        @onclick="@(() => MetaplayService.GrantCurrencyDebug(CurrencyType.Coins, 1000))">+1000 🪙 (dev)</button>
+                <button class="fd-cond text-[10px] flex-1 py-1.5 rounded-lg" style="background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.5);"
+                        @onclick="@(() => MetaplayService.GrantCurrencyDebug(CurrencyType.Shards, 50))">+50 🔩 (dev)</button>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private PlayerModel? Player => MetaplayService.PlayerModel;
+    private SharedGameConfig? Config => Player?.GameConfig;
+    private GlobalConfig Global => Config!.Global;
+
+    private IEnumerable<TeamInfo> Teams =>
+        Config?.Teams.Values ?? Enumerable.Empty<TeamInfo>();
+
+    private TeamInfo? SelectedTeam =>
+        Player?.SelectedTeamId != null && Config != null && Config.Teams.TryGetValue(TeamId.FromString(Player.SelectedTeamId), out TeamInfo? t) ? t : null;
+
+    private long Wallet(CurrencyType c) => Player?.Wallet.Get(c) ?? 0;
+
+    private int DieSides(int baseRating, int upgradeLevel) =>
+        TeamContent.DieSidesForRating(baseRating + upgradeLevel * Global.RatingPerUpgradeLevel);
+
+    private double XpPercent
+    {
+        get
+        {
+            if (Player == null) return 0;
+            long need = Global.XpToReachNextLevel(Player.PlayerLevel);
+            if (need <= 0) return 100;
+            return Math.Clamp((double)Player.Progression.Xp / need * 100.0, 0, 100);
+        }
+    }
+
+    private string XpLabel
+    {
+        get
+        {
+            if (Player == null) return "";
+            if (Player.PlayerLevel >= Global.MaxManagerLevel) return "MAX LEVEL";
+            return $"{Player.Progression.Xp} / {Global.XpToReachNextLevel(Player.PlayerLevel)} XP";
+        }
+    }
+
+    protected override void OnInitialized() => MetaplayService.OnStateChanged += OnStateChanged;
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+    public void Dispose() => MetaplayService.OnStateChanged -= OnStateChanged;
+}

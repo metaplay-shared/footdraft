@@ -1,0 +1,41 @@
+@namespace WebClientBase.Components.UI
+
+<div class="flex items-center justify-between mb-3 @Class">
+    <h3 class="text-xs font-medium uppercase tracking-wide" style="color: var(--text-muted);">@Title</h3>
+    @if (RightContent != null)
+    {
+        <div>
+            @RightContent
+        </div>
+    }
+    else if (!string.IsNullOrEmpty(RightText))
+    {
+        <span class="text-xs" style="color: var(--text-secondary);">@RightText</span>
+    }
+</div>
+
+@code {
+    /// <summary>
+    /// Section title.
+    /// </summary>
+    [Parameter, EditorRequired]
+    public string Title { get; set; } = "";
+
+    /// <summary>
+    /// Simple text to display on the right side.
+    /// </summary>
+    [Parameter]
+    public string? RightText { get; set; }
+
+    /// <summary>
+    /// Custom content to display on the right side (replaces RightText).
+    /// </summary>
+    [Parameter]
+    public RenderFragment? RightContent { get; set; }
+
+    /// <summary>
+    /// Additional CSS classes.
+    /// </summary>
+    [Parameter]
+    public string? Class { get; set; }
+}

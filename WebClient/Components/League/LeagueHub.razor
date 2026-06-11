@@ -1,0 +1,848 @@
+@using System
+@using System.Collections.Generic
+@using System.Linq
+@using Game.Logic
+@using Metaplay.Core
+@using WebClientBase.Services
+@inject MetaplayClientService MetaplayService
+@implements IDisposable
+
+@* 38-0-20 league. Start/Join by code → lobby (admin starts when ready) → async snake draft from one shared
+   pool (no legend on two teams; valid XIs) → standings. Styled to match the 38-0.app look. *@
+
+<div class="t38-bg fixed inset-0 z-40 overflow-y-auto t38-under-hud" style="padding: calc(1rem + env(safe-area-inset-top)) 1rem calc(2rem + env(safe-area-inset-bottom));">
+    <div class="w-full mx-auto flex flex-col gap-3" style="max-width: 30rem;">
+
+        @if (Player == null || Config == null)
+        {
+            <p class="text-center text-white/50 mt-10">Loading…</p>
+        }
+        else
+        {
+            <div class="flex items-center justify-between">
+                <h1 class="t38-display text-2xl text-white">38-0<span class="t38-hyphen">-</span>20</h1>
+                <button class="text-xs px-3 py-1.5 rounded-xl" style="background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.6);"
+                        @onclick="OnClose">✕ CLOSE</button>
+            </div>
+
+            @if (!string.IsNullOrEmpty(Lg.LastError))
+            {
+                <div class="text-xs px-3 py-2 rounded-xl" style="background: rgba(224,86,79,0.16); color:#ffb0ac;">@Lg.LastError</div>
+            }
+
+            @if (!Lg.InLeague || Snap == null)
+            {
+                @* ---------- Not in a league: Start (create) or Join ---------- *@
+                @if (_mode == "join")
+                {
+                    <div class="t38-card px-5 py-6 flex flex-col gap-3 mt-2">
+                        <span class="t38-label text-xs text-white/55">Join a league</span>
+                        <p class="text-xs text-white/45 -mt-1">Enter the code a friend shared with you, and name your team.</p>
+                        <input @bind="_joinCode" @bind:event="oninput" maxlength="8" placeholder="CODE"
+                               class="t38-input t38-display text-center text-3xl tracking-[0.3em] w-full py-3"
+                               style="text-transform: uppercase;" />
+                        <input @bind="_teamName" @bind:event="oninput" maxlength="22" placeholder="Your team name"
+                               class="t38-input text-sm w-full py-2.5 px-3" />
+                        <button class="t38-cta text-lg w-full py-3 t38-tap"
+                                disabled="@(string.IsNullOrWhiteSpace(_joinCode) || string.IsNullOrWhiteSpace(_teamName))"
+                                @onclick="@(() => MetaplayService.JoinLeague(_joinCode, _teamName))">JOIN LEAGUE</button>
+                    </div>
+                    <button class="text-xs text-white/45 py-1" @onclick="@(() => _mode = "create")">or start a new league →</button>
+                }
+                else if (_mode == "solo")
+                {
+                    <div class="t38-card px-5 py-6 flex flex-col gap-3 mt-2">
+                        <span class="t38-label text-xs text-white/55">Single player</span>
+                        <p class="text-xs text-white/45 -mt-1">Draft your XI and take on a league of 19 CPU teams — 38 matchdays, transfers, the lot. Can you go unbeaten?</p>
+                        <input @bind="_teamName" @bind:event="oninput" maxlength="22" placeholder="Your team name"
+                               class="t38-input text-sm w-full py-2.5 px-3" />
+                        <button class="t38-cta text-lg w-full py-3 t38-tap" data-testid="start-solo"
+                                disabled="@(string.IsNullOrWhiteSpace(_teamName))"
+                                @onclick="@(() => MetaplayService.CreateSoloLeague(_teamName))">KICK OFF&nbsp; →</button>
+                    </div>
+                    <button class="text-xs text-white/45 py-1" @onclick="@(() => _mode = "create")">play with friends instead →</button>
+                }
+                else
+                {
+                    <div class="t38-card px-5 py-6 flex flex-col gap-3 mt-2">
+                        <span class="t38-label text-xs text-white/55">Start a league</span>
+                        <p class="text-xs text-white/45 -mt-1">Name the league and your team, get a code, share it with your friends. You're the admin.</p>
+                        <input @bind="_leagueName" @bind:event="oninput" maxlength="22" placeholder="League name"
+                               class="t38-input text-sm w-full py-2.5 px-3" />
+                        <input @bind="_teamName" @bind:event="oninput" maxlength="22" placeholder="Your team name"
+                               class="t38-input text-sm w-full py-2.5 px-3" />
+                        <button class="t38-cta text-lg w-full py-3 t38-tap"
+                                disabled="@(string.IsNullOrWhiteSpace(_leagueName) || string.IsNullOrWhiteSpace(_teamName))"
+                                @onclick="@(() => MetaplayService.CreateLeague(_leagueName, _teamName))">CREATE LEAGUE</button>
+                    </div>
+                    <button class="text-xs text-white/45 py-1" @onclick="@(() => _mode = "join")">have a code? join a league →</button>
+                }
+            }
+            else if (Snap.State == LeagueState.Lobby)
+            {
+                @* ---------- Lobby: code, members, admin start (formation is chosen after the draft starts) ---------- *@
+                <div class="t38-card px-5 py-6 flex flex-col items-center text-center mt-1">
+                    <span class="t38-label text-xs text-white/45">@(string.IsNullOrEmpty(Snap.Name) ? "Your league" : Snap.Name)</span>
+                    <p class="t38-label text-[10px] text-white/40 mt-4">share this code</p>
+                    <div class="t38-display text-5xl tracking-[0.25em] my-1" style="color: var(--t38-emerald);" data-testid="league-code">@Snap.Code</div>
+                    <p class="text-xs text-white/45">@Snap.Members.Count / 20 managers joined</p>
+                </div>
+
+                <div class="t38-card px-4 py-2">
+                    @foreach (LeagueMemberView m in Snap.Members)
+                    {
+                        <div class="flex items-center gap-2 py-2 t38-row">
+                            <span class="text-lg">@m.Crest</span>
+                            <span class="text-sm text-white/90 flex-1 truncate">@m.Name</span>
+                            @if (m.Index == 0) { <span class="t38-label text-[9px] px-1.5 py-0.5 rounded" style="background:rgba(233,185,73,0.18);color:var(--t38-amber);">ADMIN</span> }
+                        </div>
+                    }
+                </div>
+
+                @if (Snap.IsCommissioner)
+                {
+                    <button class="t38-cta text-xl w-full py-4 t38-tap"
+                            disabled="@(Snap.Members.Count < 2)"
+                            @onclick="@(() => MetaplayService.StartLeagueSeason())">START DRAFT&nbsp; →</button>
+                    <p class="text-[11px] text-white/40 text-center -mt-1">
+                        @(Snap.Members.Count < 2 ? "need at least 2 managers" : $"the rest of the 20-team league fills with bots")
+                    </p>
+                }
+                else
+                {
+                    <p class="text-xs text-white/50 text-center py-2">Waiting for the admin to start the draft…</p>
+                }
+                <button class="text-xs py-2 rounded-xl" style="background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.45);"
+                        @onclick="@(() => MetaplayService.LeaveLeague())">Leave league</button>
+            }
+            else if (Snap.State == LeagueState.Drafting)
+            {
+                @* ---------- Drafting: snake draft from the shared pool ---------- *@
+                <div class="t38-card px-4 py-3 @(Snap.IsMyTurn ? "t38-turn" : "")">
+                    <div class="flex items-center justify-between">
+                        <span class="t38-label text-xs text-white/55">The draft</span>
+                        <span class="text-[11px] text-white/45">Round @Snap.DraftRound · pick @(Snap.DraftPick + 1)/@Snap.DraftTotalPicks</span>
+                    </div>
+                    <p class="text-lg mt-1" style="font-weight:800;@(Snap.IsMyTurn ? "color:var(--t38-emerald);" : "color:rgba(255,255,255,0.8);")">
+                        @(Snap.IsMyTurn ? "🟢 YOUR PICK" : $"⏳ {Snap.CurrentDrafterName} is picking…")
+                    </p>
+                </div>
+
+                @* My XI *@
+                <div class="t38-card px-3 py-3">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="t38-label text-xs text-white/55">My XI · @Snap.MyFormation</span>
+                        <span class="text-[11px] text-white/45">@MyRosterCount/11</span>
+                    </div>
+                    <div class="flex flex-col gap-1.5">
+                        @PitchRow(Position.FWD)
+                        @PitchRow(Position.MID)
+                        @PitchRow(Position.DEF)
+                        @PitchRow(Position.GK)
+                    </div>
+                </div>
+
+                @* Formation: choose before your first pick. *@
+                @if (Snap.IsMyTurn && MyRosterCount == 0)
+                {
+                    <div class="t38-card px-4 py-3 flex flex-col gap-2">
+                        <span class="t38-label text-xs text-white/55">Choose your formation</span>
+                        <div class="flex items-center gap-2 flex-wrap">
+                            @foreach (FormationInfo f in Formations)
+                            {
+                                string fid = f.Id.Value;
+                                bool sel = fid == Snap.MyFormation;
+                                <button class="text-xs px-3 py-1.5 rounded-full t38-tap"
+                                        style="@(sel ? "background:var(--t38-emerald);color:#05140d;font-weight:700;" : "background:rgba(255,255,255,0.06);color:#fff;")"
+                                        @onclick="@(() => MetaplayService.SetLeagueFormation(fid))">@f.DisplayName</button>
+                            }
+                        </div>
+                    </div>
+                }
+
+                @if (Snap.IsMyTurn && MyRosterCount < 11)
+                {
+                    @if (Snap.MySpin is { } spin)
+                    {
+                        @* Spun squad — the @key remounts this on each (re-)spin so the reveal animation replays:
+                           the club + year fade in first, then the players unfold one-by-one for a touch of suspense. *@
+                        <div class="t38-card px-4 py-4" @key="@($"{spin.Club}|{spin.Season}")">
+                            <div class="flex items-center justify-between mb-2">
+                                <div class="t38-reveal">
+                                    <span class="t38-label text-[10px] text-white/45">Squad spun</span>
+                                    <div class="t38-display text-lg text-white">@spin.Club <span style="color:var(--t38-amber);">@spin.Season</span></div>
+                                </div>
+                                <div class="flex items-center gap-1.5">
+                                    <button class="text-[11px] px-3 py-1.5 rounded-full t38-tap" style="background:rgba(255,255,255,0.06);color:#fff;"
+                                            @onclick="@(() => MetaplayService.LeagueSpin())">🎰 Re-spin</button>
+                                    <button class="t38-marquee-btn text-[11px] px-3 py-1.5 t38-tap" style="border-radius:9999px;@(CanAffordEliteSpin ? "" : "filter: grayscale(0.3) brightness(0.85);")" data-testid="elite-respin"
+                                            @onclick="@(CanAffordEliteSpin ? () => MetaplayService.LeagueEliteSpin() : () => MetaplayService.RequestShop())">⭐ 💎@EliteSpinCost</button>
+                                </div>
+                            </div>
+                            @{
+                                // Only show players the manager can actually draft — right position for an open slot and
+                                // not already taken. (e.g. if the GK slot is filled, this squad's keepers simply don't appear.)
+                                List<SpunPlayer> pickables = spin.Players.Where(p => !p.Taken && p.FitsOpenSlot).ToList();
+                            }
+                            @if (pickables.Count == 0)
+                            {
+                                <p class="text-[12px] text-white/55 text-center py-3 t38-reveal" style="animation-delay:.5s;">No one here fits an open slot — re-spin for another squad.</p>
+                            }
+                            else
+                            {
+                                <p class="text-[11px] text-white/40 mb-2 t38-reveal" style="animation-delay:.5s;">Pick a player to fill an open slot.</p>
+                                <div class="flex flex-col gap-2" style="max-height: 22rem; overflow-y:auto;">
+                                    @for (int i = 0; i < pickables.Count; i++)
+                                    {
+                                        SpunPlayer pl = pickables[i];
+                                        string lid = pl.LegendId;
+                                        double delay = 0.6 + System.Math.Min(i, 14) * 0.06; // players unfold after the club/year
+                                        <button class="t38-card t38-tap px-3 py-2.5 flex items-center gap-3 w-full text-left t38-reveal" data-testid="draft-candidate"
+                                                style="animation-delay:@(delay.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture))s;"
+                                                @onclick="@(() => MetaplayService.LeagueDraftPick(lid))">
+                                            <span class="w-10 h-10 rounded-lg flex items-center justify-center text-base @PosBgClass(pl.Position)" style="font-weight:800;">@pl.Ovr</span>
+                                            <div class="flex-1 min-w-0">
+                                                <div class="text-white truncate" style="font-weight:700;">@pl.Name</div>
+                                                <div class="text-[11px] text-white/40 truncate">@pl.Nation</div>
+                                            </div>
+                                            <span class="text-[10px] px-2 py-1 rounded @PosBgClass(pl.Position)" style="font-weight:700;">@PosShort(pl.Position)</span>
+                                        </button>
+                                    }
+                                </div>
+                            }
+                        </div>
+                        <button class="text-[11px] text-white/40 py-1" @onclick="@(() => MetaplayService.LeagueAutoPick())">⚡ or auto-pick the best available</button>
+                    }
+                    else
+                    {
+                        @* Spin a random Club × Season squad to draft from. *@
+                        <div class="t38-card px-4 py-7 flex flex-col items-center text-center">
+                            <span class="text-5xl mb-3">🎰</span>
+                            <p class="t38-label text-[11px] text-white/45 mb-5">Spin for a random club &amp; season, then pick a player</p>
+                            <button class="t38-cta text-xl w-full py-4 t38-tap" data-testid="spin-wheel" @onclick="@(() => MetaplayService.LeagueSpin())">SPIN WHEEL</button>
+                            <button class="t38-marquee-btn @(CanAffordEliteSpin ? "t38-shine" : "") text-base w-full py-3 mt-2 t38-tap" data-testid="elite-spin"
+                                    style="@(CanAffordEliteSpin ? "" : "filter: grayscale(0.3) brightness(0.85);")"
+                                    @onclick="@(CanAffordEliteSpin ? () => MetaplayService.LeagueEliteSpin() : () => MetaplayService.RequestShop())">
+                                ⭐ ELITE SPIN — 💎@EliteSpinCost@(CanAffordEliteSpin ? "" : " · GET GEMS →")
+                                <span class="t38-label text-[8px] block opacity-80" style="letter-spacing:0.12em;">guaranteed top-tier club</span>
+                            </button>
+                            <button class="text-[11px] text-white/40 py-2" @onclick="@(() => MetaplayService.LeagueAutoPick())">or auto-pick a player</button>
+                        </div>
+                    }
+                }
+                else if (MyRosterCount >= 11)
+                {
+                    <p class="text-xs text-white/50 text-center py-2">Your XI is complete — waiting on the rest of the league.</p>
+                }
+                else
+                {
+                    <p class="text-xs text-white/50 text-center py-2">Waiting for your turn…</p>
+                }
+
+                @* Draft board *@
+                <div class="t38-card px-3 py-2">
+                    <span class="t38-label text-[10px] text-white/40">Draft board</span>
+                    @foreach (LeagueMemberView m in Snap.Members)
+                    {
+                        bool onClock = m.Index == Snap.CurrentDrafterIndex;
+                        bool me = m.Index == Snap.MyIndex;
+                        <div class="flex items-center gap-2 py-1.5 t38-row @(me ? "t38-me rounded-lg px-1" : "")">
+                            <span class="text-base">@m.Crest</span>
+                            <span class="text-xs text-white/85 flex-1 truncate">@m.Name @(onClock ? "⏱" : "")</span>
+                            <span class="text-[10px] text-white/35">@(string.IsNullOrEmpty(m.FormationName) ? "4-3-3" : m.FormationName)</span>
+                            <span class="text-xs" style="@(m.RosterComplete ? "color:var(--t38-emerald);font-weight:700;" : "color:rgba(255,255,255,0.6);")">@m.PicksCount/11</span>
+                        </div>
+                    }
+                </div>
+
+                @if (Snap.IsCommissioner)
+                {
+                    <button class="text-xs py-2 rounded-xl" style="background:rgba(255,255,255,0.04);color:rgba(255,255,255,0.55);"
+                            data-testid="auto-draft-all" @onclick="@(() => MetaplayService.LeagueAutoDraftAll())">⏭ Auto-draft the rest of the league</button>
+                }
+            }
+            else
+            {
+                @* ---------- Active / Finished: matchday + standings ---------- *@
+                @if (Snap.Invincible)
+                {
+                    <div class="t38-card fd-victory-pop px-4 py-3 flex items-center justify-center gap-2" style="background: rgba(233,185,73,0.14);">
+                        <span class="text-2xl">🏆</span>
+                        <span style="font-weight:800;color:var(--t38-amber);">THE INVINCIBLES — unbeaten!</span>
+                    </div>
+                }
+
+                @* ---------- HERO: the next matchday (the core of the in-season loop) ---------- *@
+                <div class="t38-tile-hero px-5 py-5 flex flex-col items-center text-center" data-testid="hero-matchday">
+                    <span class="t38-label text-[10px] text-white/45">@(string.IsNullOrEmpty(Snap.Name) ? "League" : Snap.Name)</span>
+                    @if (Snap.State == LeagueState.Finished)
+                    {
+                        <div class="t38-display text-3xl text-white mt-1">FULL TIME</div>
+                        <p class="text-xs text-white/55 mt-1">Season complete · @Snap.TotalMatchdays matchdays played</p>
+                    }
+                    else
+                    {
+                        <div class="t38-display text-3xl text-white mt-1">MATCHDAY @(Snap.CurrentMatchday + 1)<span class="text-white/35 text-xl">/@Snap.TotalMatchdays</span></div>
+                        <div class="flex items-center gap-2 mt-2">
+                            <span class="text-xs text-white/55">kicks off in</span>
+                            <span class="t38-countdown text-lg" style="color:var(--t38-emerald);font-weight:800;">@NextSimText</span>
+                        </div>
+                        @if (Snap.IsCommissioner)
+                        {
+                            <button class="t38-cta text-lg w-full py-3.5 mt-4 t38-tap" data-testid="play-matchday"
+                                    disabled="@_cineWaiting"
+                                    @onclick="PlayMatchday">@(_cineWaiting ? "▶ KICKING OFF…" : "▶ PLAY MATCHDAY NOW")</button>
+                        }
+                        else
+                        {
+                            <p class="text-[11px] text-white/40 mt-3">sims automatically at 7pm UTC — work the market while you wait</p>
+                        }
+                    }
+
+                    @if (Snap.LastMatchdayNumber > 0 && Snap.LastMatchdayLines.Count > 0)
+                    {
+                        <button class="t38-label text-[10px] text-white/40 mt-4 t38-tap" @onclick="@(() => _showResults = !_showResults)">
+                            Matchday @Snap.LastMatchdayNumber results @(_showResults ? "▲" : "▼")
+                        </button>
+                        @if (_showResults)
+                        {
+                            <div class="flex flex-col gap-0.5 mt-1 w-full" style="max-height: 10rem; overflow-y:auto;">
+                                @foreach (string line in Snap.LastMatchdayLines)
+                                {
+                                    <span class="text-[11px] text-white/70">@line</span>
+                                }
+                            </div>
+                        }
+                    }
+                </div>
+
+                @* ---------- The meta hub: big tiles with claim badges ---------- *@
+                @if (Snap.MyIndex >= 0)
+                {
+                    @if (Snap.State == LeagueState.Active && Snap.MyRoster.Count > 0)
+                    {
+                        <button class="t38-tile-xl t38-tap w-full px-5 py-4 flex items-center gap-4 text-left" data-testid="meta-transfers"
+                                @onclick="@(() => _showTransfers = true)">
+                            <span class="text-3xl">🔁</span>
+                            <div class="flex-1">
+                                <div class="t38-display text-lg text-white">TRANSFER MARKET</div>
+                                <div class="text-[11px] mt-0.5 @(Snap.TransferWindowOpen ? "" : "text-white/40")" style="@(Snap.TransferWindowOpen ? "color:var(--t38-emerald);font-weight:700;" : "")">
+                                    @(Snap.TransferWindowOpen ? "● WINDOW OPEN — sign a star" : "window closed")
+                                </div>
+                            </div>
+                            <span class="t38-label text-[9px] px-2 py-1 rounded-full" style="background:rgba(233,185,73,0.16);color:var(--t38-amber);">⭐ MARQUEE</span>
+                            @if (Snap.TransferWindowOpen) { <span class="t38-badge t38-badge-dot"></span> }
+                        </button>
+                    }
+
+                    <div class="grid grid-cols-2 gap-2.5">
+                        <button class="t38-tile-xl t38-tap relative flex flex-col items-center justify-center py-4" data-testid="meta-quests" @onclick="@(() => _showQuests = true)">
+                            <span class="text-2xl">📅</span><span class="t38-label text-[10px] text-white/70 mt-1.5">Quests</span>
+                            @if (ClaimableQuests > 0) { <span class="t38-badge">@ClaimableQuests</span> }
+                        </button>
+                        <button class="t38-tile-xl t38-tap relative flex flex-col items-center justify-center py-4" data-testid="meta-pass" @onclick="@(() => _showPass = true)">
+                            <span class="text-2xl">🏅</span><span class="t38-label text-[10px] text-white/70 mt-1.5">Season Pass</span>
+                            @if (ClaimablePassTiers > 0) { <span class="t38-badge">@ClaimablePassTiers</span> }
+                        </button>
+                        <button class="t38-tile-xl t38-tap relative flex flex-col items-center justify-center py-4" data-testid="meta-shop" @onclick="@(() => MetaplayService.RequestShop())">
+                            <span class="text-2xl">💎</span><span class="t38-label text-[10px] text-white/70 mt-1.5">Shop</span>
+                        </button>
+                        <button class="t38-tile-xl t38-tap relative flex flex-col items-center justify-center py-4" data-testid="meta-inbox" @onclick="@(() => _showInbox = true)">
+                            <span class="text-2xl">📬</span><span class="t38-label text-[10px] text-white/70 mt-1.5">Inbox</span>
+                            @if (UnreadMail > 0) { <span class="t38-badge">@UnreadMail</span> }
+                        </button>
+                    </div>
+                }
+
+                <div class="t38-card px-3 py-2">
+                    <button class="w-full flex items-center justify-between py-1 t38-tap" data-testid="standings-toggle"
+                            @onclick="@(() => _showTable = !_showTable)">
+                        <span class="t38-label text-xs text-white/55">Table@(string.IsNullOrEmpty(MyRankText) ? "" : $" · you're {MyRankText}")</span>
+                        <span class="text-xs text-white/40">@(_showTable ? "▲" : "▼")</span>
+                    </button>
+                    @if (_showTable)
+                    {
+                        <div class="flex items-center gap-1 t38-label text-[10px] text-white/40 pb-1 t38-row">
+                            <span class="w-5">#</span><span class="flex-1">Manager</span>
+                            <span class="w-6 text-center">P</span><span class="w-6 text-center">W</span>
+                            <span class="w-6 text-center">D</span><span class="w-6 text-center">L</span>
+                            <span class="w-8 text-center">GD</span><span class="w-7 text-center">Pts</span>
+                        </div>
+                        @for (int i = 0; i < Snap.Table.Count; i++)
+                        {
+                            LeagueRow row = Snap.Table[i];
+                            int rank = i + 1;
+                            bool me = row.TeamIndex == Snap.MyIndex;
+                            <div class="flex items-center gap-1 py-1.5 t38-row @(me ? "t38-me rounded-lg px-1" : "")" style="@(IsBotOf(row.TeamIndex) && !me ? "opacity:0.55;" : "")">
+                                <span class="text-xs text-white/60 w-5" style="font-weight:700;">@rank</span>
+                                <span class="text-sm">@CrestOf(row.TeamIndex)</span>
+                                <span class="text-xs text-white/90 flex-1 truncate">@NameOf(row.TeamIndex)</span>
+                                <span class="text-xs text-white/65 w-6 text-center">@row.Played</span>
+                                <span class="text-xs text-white/65 w-6 text-center">@row.Won</span>
+                                <span class="text-xs text-white/65 w-6 text-center">@row.Drawn</span>
+                                <span class="text-xs text-white/65 w-6 text-center">@row.Lost</span>
+                                <span class="text-xs text-white/65 w-8 text-center">@(row.GoalDiff > 0 ? "+" : "")@row.GoalDiff</span>
+                                <span class="text-sm w-7 text-center" style="font-weight:800;color:var(--t38-emerald);">@row.Points</span>
+                            </div>
+                        }
+                    }
+                </div>
+
+                @if (Snap.State == LeagueState.Finished)
+                {
+                    <button class="t38-cta text-lg w-full py-3 t38-tap" @onclick="OnClose">DONE</button>
+                }
+                else if (Snap.IsCommissioner)
+                {
+                    <div class="flex items-center gap-2 mt-1">
+                        <span class="t38-label text-[9px] text-white/30">Commissioner</span>
+                        <button class="t38-ghost text-xs flex-1 py-2.5 t38-tap" data-testid="simulate-season"
+                                @onclick="@(() => MetaplayService.SimulateLeague())">⏩ Simulate whole season</button>
+                    </div>
+                }
+            }
+        }
+    </div>
+</div>
+
+@* ---------- Matchday cinematic: the sim plays out as a ticking match instead of a result popping into existence.
+     Minutes are synthesized client-side (presentation only — the authoritative scoreline came from the server). ---------- *@
+@if (_cineActive && _cineResult != null && Snap != null)
+{
+    int shownMine = CineGoalsShown(mine: true);
+    int shownOpp  = CineGoalsShown(mine: false);
+    bool fullTime = _cineMinute >= CineFullTimeMinute;
+    string myName = NameOf(Snap.MyIndex);
+    string homeName = _cineResult.Home ? myName : _cineResult.OpponentName;
+    string awayName = _cineResult.Home ? _cineResult.OpponentName : myName;
+    int homeGoals = _cineResult.Home ? shownMine : shownOpp;
+    int awayGoals = _cineResult.Home ? shownOpp : shownMine;
+    <div class="t38-bg t38-pitch fixed inset-0 z-[70] flex flex-col items-center justify-center px-6 text-center" data-testid="match-cinematic"
+         @onclick="SkipCinematic">
+        <span class="t38-label text-[10px] text-white/45">Matchday @Snap.LastMatchdayNumber · @(string.IsNullOrEmpty(Snap.Name) ? "League" : Snap.Name)</span>
+
+        @if (fullTime)
+        {
+            <div class="t38-display text-2xl mt-3 fd-victory-pop" style="color:@(_cineResult.Outcome > 0 ? "var(--t38-emerald)" : _cineResult.Outcome < 0 ? "#ffb0ac" : "rgba(255,255,255,0.85)");">
+                @(_cineResult.Outcome > 0 ? "🏆 VICTORY" : _cineResult.Outcome < 0 ? "DEFEAT" : "DRAW")
+            </div>
+        }
+        else
+        {
+            <div class="t38-display t38-countdown text-2xl mt-3" style="color:var(--t38-emerald);">@(_cineMinute)′</div>
+        }
+
+        <div class="flex items-center justify-center gap-4 mt-4 w-full" style="max-width: 24rem;">
+            <div class="flex-1 text-right">
+                <div class="text-sm text-white/85 truncate" style="font-weight:700;">@homeName</div>
+                <div class="t38-label text-[8px] text-white/35">Home</div>
+            </div>
+            <div class="t38-display t38-countdown text-5xl text-white whitespace-nowrap">@homeGoals<span class="text-white/35"> – </span>@awayGoals</div>
+            <div class="flex-1 text-left">
+                <div class="text-sm text-white/85 truncate" style="font-weight:700;">@awayName</div>
+                <div class="t38-label text-[8px] text-white/35">Away</div>
+            </div>
+        </div>
+
+        <div class="flex flex-col gap-1 mt-5" style="min-height: 7rem;">
+            @foreach ((int minute, bool mine) in _cineGoals)
+            {
+                if (minute <= _cineMinute)
+                {
+                    <span class="text-sm t38-reveal" style="@(mine ? "color:var(--t38-emerald);font-weight:700;" : "color:rgba(255,255,255,0.6);")">
+                        ⚽ @(minute)′ GOAL — @(mine ? myName : _cineResult.OpponentName)
+                    </span>
+                }
+            }
+        </div>
+
+        @if (fullTime)
+        {
+            <div class="t38-display text-lg text-white mt-1">FULL TIME</div>
+            @if (MetaplayService.LastMatchReward is { } reward)
+            {
+                <div class="flex items-center justify-center gap-3 mt-2 text-sm" style="font-weight:700;">
+                    <span style="color:var(--t38-amber);">+@reward.Coins 🪙</span>
+                    <span class="text-white/70">+@reward.Xp XP</span>
+                    <span style="color:#b98bff;">+@reward.Shards 🔩</span>
+                </div>
+            }
+            <button class="t38-cta text-lg py-3.5 px-12 mt-5 t38-tap" data-testid="continue-cinematic"
+                    @onclick="CloseCinematic" @onclick:stopPropagation="true">CONTINUE →</button>
+        }
+        else
+        {
+            <span class="t38-label text-[9px] text-white/30 mt-3">tap to skip</span>
+        }
+    </div>
+}
+
+@* ---------- Metagame overlays (paint over the league hub; the Shop is mounted by the TopBar HUD) ---------- *@
+@if (_showTransfers)
+{
+    <TransferMarketHub OnClose="@(() => _showTransfers = false)" />
+}
+@if (_showPass)
+{
+    <PassHub OnClose="@(() => _showPass = false)" />
+}
+@if (_showQuests)
+{
+    <QuestsHub OnClose="@(() => _showQuests = false)" />
+}
+@if (_showInbox)
+{
+    <InboxHub OnClose="@(() => _showInbox = false)" />
+}
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public string InitialMode { get; set; } = "create";
+
+    private System.Timers.Timer? _refreshTimer;
+    private System.Timers.Timer? _tickTimer;
+    private string _leagueName = "";
+    private string _joinCode = "";
+    private string _teamName = "";
+    private string _mode = "create";
+    private Position? _pickPos;
+
+    private PlayerModel? Player => MetaplayService.PlayerModel;
+    private SharedGameConfig? Config => Player?.GameConfig;
+    private PlayerLeague Lg => Player!.League;
+    private LeagueSnapshot? Snap => Lg.Snapshot;
+
+    private IEnumerable<FormationInfo> Formations => Config?.Formations.Values ?? Enumerable.Empty<FormationInfo>();
+
+    private string NameOf(int teamIndex) =>
+        Snap?.Members.FirstOrDefault(m => m.Index == teamIndex)?.Name ?? $"#{teamIndex}";
+    private string CrestOf(int teamIndex) =>
+        Snap?.Members.FirstOrDefault(m => m.Index == teamIndex)?.Crest ?? "⚽";
+    private bool IsBotOf(int teamIndex) =>
+        Snap?.Members.FirstOrDefault(m => m.Index == teamIndex)?.IsBot == true;
+
+    // Human-readable time until the next scheduled matchday sim (ticking — a 1s timer repaints the hero).
+    private string NextSimText
+    {
+        get
+        {
+            if (Snap == null || Snap.NextSimAtMillis <= 0) return "";
+            long ms = Snap.NextSimAtMillis - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (ms <= 0) return "any moment";
+            long totalSecs = ms / 1000;
+            long h = totalSecs / 3600, m = (totalSecs % 3600) / 60, s = totalSecs % 60;
+            if (h > 0) return $"{h}h {m:00}m {s:00}s";
+            if (m > 0) return $"{m}m {s:00}s";
+            return $"{s}s";
+        }
+    }
+
+    // My current league position, as an ordinal ("3rd"), for the collapsed table header.
+    private string MyRankText
+    {
+        get
+        {
+            if (Snap == null || Snap.MyIndex < 0) return "";
+            int rank = 0;
+            foreach (LeagueRow row in Snap.Table)
+            {
+                rank++;
+                if (row.TeamIndex == Snap.MyIndex)
+                    return rank switch { 1 => "1st", 2 => "2nd", 3 => "3rd", 21 => "21st", _ => $"{rank}th" };
+            }
+            return "";
+        }
+    }
+
+    private string MyFormationName
+    {
+        get
+        {
+            if (Snap == null) return "";
+            LeagueMemberView? me = Snap.Members.FirstOrDefault(m => m.Index == Snap.MyIndex);
+            if (me != null && !string.IsNullOrEmpty(me.FormationName)) return me.FormationName;
+            return Snap.MyFormation ?? "";
+        }
+    }
+
+    private LegendPlayer? Lookup(string id) =>
+        Config != null && Config.Legends.TryGetValue(LegendId.FromString(id), out LegendPlayer? p) ? p : null;
+
+    private FormationInfo? MyFormationInfo =>
+        Config != null && Snap != null && !string.IsNullOrEmpty(Snap.MyFormation)
+        && Config.Formations.TryGetValue(FormationId.FromString(Snap.MyFormation), out FormationInfo? f) ? f : null;
+
+    private int MyRosterCount => Snap?.MyRoster.Count ?? 0;
+
+    private LegendPlayer? RosterLegendAt(int slot) =>
+        Snap != null && Snap.MyRoster.TryGetValue(slot, out string? id) ? Lookup(id!) : null;
+
+    private int RemainingFor(Position pos)
+    {
+        FormationInfo? f = MyFormationInfo;
+        if (f == null || Snap == null) return 0;
+        int need = f.CountOf(pos);
+        int have = 0;
+        for (int slot = 0; slot < f.Slots.Count; slot++)
+            if (f.Slots[slot] == pos && Snap.MyRoster.ContainsKey(slot))
+                have++;
+        return need - have;
+    }
+
+    private List<Position> OpenPositions()
+    {
+        List<Position> open = new List<Position>();
+        foreach (Position p in new[] { Position.GK, Position.DEF, Position.MID, Position.FWD })
+            if (RemainingFor(p) > 0) open.Add(p);
+        return open;
+    }
+
+    private Position ActivePickPos
+    {
+        get
+        {
+            List<Position> open = OpenPositions();
+            if (open.Count == 0) return Position.GK;
+            if (_pickPos.HasValue && open.Contains(_pickPos.Value)) return _pickPos.Value;
+            return open[0];
+        }
+    }
+
+    // The shared draft pool (one entry per real player), built once — matches the server's pool so a footballer
+    // can only be drafted onto one team.
+    private List<LegendPlayer>? _pool;
+    private List<LegendPlayer> DraftPool =>
+        _pool ??= (Config != null ? LeagueDraftEngine.BuildDraftPool(Config.Legends.Values.ToList()) : new List<LegendPlayer>());
+
+    // ---- In-season hub overlays + claim badges ----
+    private bool _showTransfers;
+    private bool _showPass;
+    private bool _showQuests;
+    private bool _showInbox;
+    private bool _showResults;
+    private bool _showTable = true;
+
+    private int UnreadMail => Player?.MailInbox.Count(m => !m.IsRead) ?? 0;
+
+    // ---- Matchday cinematic (feedback for PLAY MATCHDAY NOW — the sim "plays out" over ~10s) ----
+    private const int CineFullTimeMinute = 93;
+    private bool _cineWaiting;                 // play clicked, waiting for the result snapshot
+    private int  _cineBaseMatchday;            // LastMatchdayNumber when play was clicked
+    private bool _cineActive;
+    private int  _cineMinute;
+    private LeaguePlayResult? _cineResult;
+    private readonly List<(int Minute, bool Mine)> _cineGoals = new List<(int, bool)>();
+    private System.Timers.Timer? _cineTimer;
+
+    private void PlayMatchday()
+    {
+        _cineBaseMatchday = Snap?.LastMatchdayNumber ?? 0;
+        _cineWaiting = true;
+        MetaplayService.ClearMatchReward(); // so the FT screen shows THIS matchday's rewards
+        MetaplayService.PlayLeagueFixture();
+    }
+
+    private int CineGoalsShown(bool mine)
+    {
+        int count = 0;
+        foreach ((int minute, bool isMine) in _cineGoals)
+            if (isMine == mine && minute <= _cineMinute)
+                count++;
+        return count;
+    }
+
+    private void StartCinematic(int matchday, LeaguePlayResult result)
+    {
+        _cineWaiting = false;
+        _cineResult = result;
+        _cineGoals.Clear();
+        // Deterministic pseudo-random goal minutes (cosmetic — the server only reports the scoreline).
+        for (int i = 0; i < result.MyGoals; i++)  _cineGoals.Add((CineMinute(matchday, i, 0), true));
+        for (int i = 0; i < result.OppGoals; i++) _cineGoals.Add((CineMinute(matchday, i, 1), false));
+        _cineGoals.Sort((a, b) => a.Minute.CompareTo(b.Minute));
+        _cineMinute = 0;
+        _cineActive = true;
+        _cineTimer?.Stop();
+        _cineTimer?.Dispose();
+        _cineTimer = new System.Timers.Timer(110) { AutoReset = true };
+        _cineTimer.Elapsed += (_, _) =>
+        {
+            if (_cineMinute < CineFullTimeMinute)
+            {
+                _cineMinute++;
+                OnStateChanged();
+            }
+            else
+            {
+                _cineTimer?.Stop();
+            }
+        };
+        _cineTimer.Start();
+    }
+
+    private static int CineMinute(int matchday, int index, int side)
+    {
+        unchecked
+        {
+            uint h = (uint)(matchday * 7919 + index * 104729 + side * 1299721);
+            h ^= h >> 13; h *= 2246822519u; h ^= h >> 16;
+            return 1 + (int)(h % 90);
+        }
+    }
+
+    private void SkipCinematic()
+    {
+        if (_cineActive && _cineMinute < CineFullTimeMinute)
+            _cineMinute = CineFullTimeMinute;
+    }
+
+    private void CloseCinematic()
+    {
+        _cineActive = false;
+        _cineResult = null;
+        _cineTimer?.Stop();
+        MetaplayService.ClearMatchReward();
+    }
+
+    // ---- Elite spin (gem-paid, guaranteed top-tier club) ----
+    private LeagueDefinition Def =>
+        Config != null && Config.LeagueDefinitions.TryGetValue(LeagueDefinitionId.FromString(LeagueDefinitionContent.DefaultId), out LeagueDefinition? def)
+            ? def! : LeagueDefinitionContent.Default;
+    private long EliteSpinCost => Def.EliteSpinGemCost;
+    private bool CanAffordEliteSpin => (Player?.Wallet.Get(CurrencyType.Gems) ?? 0) >= EliteSpinCost;
+
+    /// <summary> Completed-but-unclaimed quests across both scopes (daily gated on the stored day being current). </summary>
+    private int ClaimableQuests
+    {
+        get
+        {
+            if (Player == null || Config == null) return 0;
+            int count = 0;
+            bool dayCurrent = Player.Quests.DayKey == QuestEngine.DayOf(Player.CurrentTime);
+            if (dayCurrent)
+            {
+                foreach (QuestInfo def in QuestEngine.EffectiveDailySet(Config.Quests.Values, Player.Quests, Config.Global.DailyQuestSlots))
+                    if (QuestEngine.IsComplete(def, Player.Quests) && !QuestEngine.IsClaimed(def, Player.Quests))
+                        count++;
+            }
+            if (Player.Quests.SeasonScopeKey == (Player.League.Code ?? ""))
+            {
+                foreach (QuestInfo def in Config.Quests.Values)
+                    if (def.Scope == QuestScope.Season && QuestEngine.IsComplete(def, Player.Quests) && !QuestEngine.IsClaimed(def, Player.Quests))
+                        count++;
+            }
+            return count;
+        }
+    }
+
+    /// <summary> Unlocked-but-unclaimed Season Pass tiers (free track + premium if owned). </summary>
+    private int ClaimablePassTiers
+    {
+        get
+        {
+            if (Player == null || Config == null) return 0;
+            GlobalConfig global = Config.Global;
+            int tier = global.PassTier(Player.Pass.Xp);
+            int free = System.Math.Max(0, System.Math.Min(tier, global.PassFreeRewards.Length) - Player.Pass.ClaimedFree);
+            int premium = Player.Pass.PremiumOwned
+                ? System.Math.Max(0, System.Math.Min(tier, global.PassPremiumRewards.Length) - Player.Pass.ClaimedPremium)
+                : 0;
+            return free + premium;
+        }
+    }
+
+    private RenderFragment PitchRow(Position pos) => @<div class="flex justify-center gap-1.5 flex-wrap">
+        @foreach (int s in SlotsFor(pos))
+        {
+            LegendPlayer? legend = RosterLegendAt(s);
+            if (legend != null)
+            {
+                <div class="rounded-lg px-1 py-1 flex flex-col items-center" style="width:4.2rem;background:rgba(255,255,255,0.04);border:1px solid var(--t38-line);">
+                    <span class="text-sm @PosTextClass(pos)" style="font-weight:800;">@legend.Ovr</span>
+                    <span class="text-[9px] text-white/85 truncate w-full text-center">@ShortName(legend.Name)</span>
+                </div>
+            }
+            else
+            {
+                <div class="rounded-lg flex flex-col items-center justify-center" style="width:4.2rem;height:3rem;border:1px dashed rgba(255,255,255,0.18);">
+                    <span class="text-[8px] @PosTextClass(pos)" style="font-weight:700;">@PosShort(pos)</span>
+                </div>
+            }
+        }
+    </div>;
+
+    private List<int> SlotsFor(Position pos)
+    {
+        List<int> idx = new List<int>();
+        FormationInfo? f = MyFormationInfo;
+        if (f == null) return idx;
+        for (int s = 0; s < f.Slots.Count; s++)
+            if (f.Slots[s] == pos) idx.Add(s);
+        return idx;
+    }
+
+    private static string PosShort(Position p) => p switch { Position.GK => "GK", Position.DEF => "DEF", Position.MID => "MID", _ => "FWD" };
+    private static string PosBgClass(Position p) => p switch { Position.GK => "t38-pos-gk", Position.DEF => "t38-pos-def", Position.MID => "t38-pos-mid", _ => "t38-pos-fwd" };
+    private static string PosTextClass(Position p) => p switch
+    {
+        Position.GK => "text-[#e0b84e]", Position.DEF => "text-[#3b82f6]", Position.MID => "text-[#34d39a]", _ => "text-[#e0564f]"
+    };
+    private static string PosChipStyle(Position p, bool sel)
+    {
+        string c = p switch { Position.GK => "224,184,78", Position.DEF => "59,130,246", Position.MID => "52,211,154", _ => "224,86,79" };
+        return sel
+            ? $"background:rgb({c});color:#06140d;font-weight:700;"
+            : $"background:rgba({c},0.14);color:rgb({c});";
+    }
+
+    private static string ShortName(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return name;
+        string[] parts = name.Split(' ');
+        return parts.Length > 1 ? parts[parts.Length - 1] : name;
+    }
+
+    protected override void OnInitialized()
+    {
+        _mode = InitialMode is "join" or "solo" ? InitialMode : "create";
+        _teamName = Player?.TeamName ?? ""; // remembered from a previous league
+        MetaplayService.OnStateChanged += OnStateChanged;
+        _refreshTimer = new System.Timers.Timer(3000) { AutoReset = true };
+        _refreshTimer.Elapsed += (_, _) =>
+        {
+            if (Player?.League.InLeague == true)
+                MetaplayService.RefreshLeague();
+        };
+        _refreshTimer.Start();
+        // 1s repaint so the hero countdown ticks (tabular-nums keeps the digits steady).
+        _tickTimer = new System.Timers.Timer(1000) { AutoReset = true };
+        _tickTimer.Elapsed += (_, _) =>
+        {
+            if (Snap?.State == LeagueState.Active)
+                OnStateChanged();
+        };
+        _tickTimer.Start();
+        if (Player?.League.InLeague == true)
+            MetaplayService.RefreshLeague();
+    }
+
+    private void OnStateChanged()
+    {
+        // The played matchday's snapshot + my fixture result arrive together (one PlayerSetLeagueState) —
+        // that's the cue to roll the cinematic.
+        if (_cineWaiting && Snap != null && Snap.LastMatchdayNumber > _cineBaseMatchday && Lg.LastPlayResult != null)
+            StartCinematic(Snap.LastMatchdayNumber, Lg.LastPlayResult);
+        InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        MetaplayService.OnStateChanged -= OnStateChanged;
+        _refreshTimer?.Stop();
+        _refreshTimer?.Dispose();
+        _tickTimer?.Stop();
+        _tickTimer?.Dispose();
+        _cineTimer?.Stop();
+        _cineTimer?.Dispose();
+    }
+}

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+  <!-- These E2E tests drive one shared local game server + WASM client. Run them sequentially: parallel browser
+       sessions contend for CPU and trip transport timeouts (false failures). One worker = stable. -->
+  <NUnit>
+    <NumberOfTestWorkers>1</NumberOfTestWorkers>
+  </NUnit>
+  <Playwright>
+    <!-- Run tests in headless mode (no visible browser window) -->
+    <BrowserName>chromium</BrowserName>
+    <LaunchOptions>
+      <Headless>true</Headless>
+      <!-- Set to false to see the browser for debugging:
+      <Headless>false</Headless>
+      <SlowMo>500</SlowMo>
+      -->
+    </LaunchOptions>
+    <!-- Screenshot on failure -->
+    <ExpectTimeout>5000</ExpectTimeout>
+  </Playwright>
+</RunSettings>

@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Shared game-logic assembly for the Blazor WebAssembly client.
+
+    The WebAssembly client cannot generate its serializer at runtime (mono-wasm has no Reflection.Emit / Roslyn),
+    so it loads a pre-built Metaplay.Generated.WebAssembly.dll. That generated assembly references the concrete game
+    types (PlayerModel, PlayerActions, ...) *by assembly identity*. To make the identity match between the
+    build-time generator (tools/SerializerGen) and the runtime app (WebClient), the game types live here in a single
+    shared assembly that both projects reference - rather than being source-included into each.
+
+    This is the client-side counterpart of Backend/SharedCode/SharedCode.csproj, which references Metaplay.Cloud
+    (server) and is therefore not usable in the browser. Both source-include the same SharedCode/ tree.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>Latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Version>0.1.0.0</Version>
+    <!-- CS8632/CS8669: nullable annotations used while Nullable is disabled. -->
+    <NoWarn>$(NoWarn);CS8632;CS8669</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\MetaplaySDK\Backend\CodeAnalyzers\Metaplay.CodeAnalyzers.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <OutputItemType>Analyzer</OutputItemType>
+    </ProjectReference>
+    <ProjectReference Include="..\MetaplaySDK\Backend\CodeAnalyzers.Shared\Metaplay.CodeAnalyzers.Shared.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <OutputItemType>Analyzer</OutputItemType>
+    </ProjectReference>
+    <ProjectReference Include="..\MetaplaySDK\Client\Metaplay.Client.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\SharedCode\**\*.cs" LinkBase="SharedCode" />
+  </ItemGroup>
+
+</Project>

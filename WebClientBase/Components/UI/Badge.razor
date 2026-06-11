@@ -1,0 +1,71 @@
+@namespace WebClientBase.Components.UI
+
+<span class="@ComputedClass" style="@ComputedStyle">
+    @ChildContent
+</span>
+
+@code {
+    /// <summary>
+    /// Badge variant for styling.
+    /// </summary>
+    public enum BadgeVariant
+    {
+        Default,
+        Primary,
+        Success,
+        Warning,
+        Danger,
+        Info
+    }
+
+    /// <summary>
+    /// Badge size.
+    /// </summary>
+    public enum BadgeSize
+    {
+        Small,
+        Medium
+    }
+
+    /// <summary>
+    /// The badge variant. Default: Default
+    /// </summary>
+    [Parameter]
+    public BadgeVariant Variant { get; set; } = BadgeVariant.Default;
+
+    /// <summary>
+    /// The badge size. Default: Small
+    /// </summary>
+    [Parameter]
+    public BadgeSize Size { get; set; } = BadgeSize.Small;
+
+    /// <summary>
+    /// Badge content.
+    /// </summary>
+    [Parameter]
+    public RenderFragment? ChildContent { get; set; }
+
+    /// <summary>
+    /// Additional CSS classes.
+    /// </summary>
+    [Parameter]
+    public string? Class { get; set; }
+
+    private string ComputedClass => $"rounded font-medium {SizeClass} {Class}";
+
+    private string SizeClass => Size switch
+    {
+        BadgeSize.Medium => "px-2 py-1 text-xs",
+        _ => "px-1.5 py-0.5 text-xs"
+    };
+
+    private string ComputedStyle => Variant switch
+    {
+        BadgeVariant.Primary => "background: var(--accent-blue); color: white;",
+        BadgeVariant.Success => "background: rgba(34, 197, 94, 0.15); color: var(--accent-green);",
+        BadgeVariant.Warning => "background: rgba(245, 158, 11, 0.15); color: var(--accent-amber);",
+        BadgeVariant.Danger => "background: rgba(239, 68, 68, 0.15); color: var(--accent-red);",
+        BadgeVariant.Info => "background: rgba(59, 130, 246, 0.15); color: var(--accent-blue);",
+        _ => "background: var(--bg-hover); color: var(--text-secondary);"
+    };
+}

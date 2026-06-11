@@ -1,0 +1,188 @@
+@using System.Collections.Generic
+@using System.Linq
+@using Game.Logic
+@using Metaplay.Core
+@using WebClientBase.Services
+@inject MetaplayClientService MetaplayService
+@implements IDisposable
+
+@* FOOTDRAFT — quests (WS4 retention + the meta loop). Daily slate (gem-paid reroll on unfinished ones) plus
+   season-long quests that arc across all 38 matchdays. Claims burst coins toward the HUD counter. *@
+
+<div class="t38-bg fixed inset-0 z-40 overflow-y-auto t38-under-hud" style="padding-left: 1rem; padding-right: 1rem; padding-bottom: calc(2rem + env(safe-area-inset-bottom));">
+    <div class="w-full max-w-md mx-auto flex flex-col gap-3">
+        @if (Player == null)
+        {
+            <p class="text-center text-white/50 mt-10">Loading…</p>
+        }
+        else
+        {
+            <div class="flex items-center justify-between">
+                <h1 class="t38-display text-2xl text-white">📅 QUESTS</h1>
+                <button class="text-xs px-3 py-1.5 rounded-xl" style="background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.6);"
+                        @onclick="OnClose">✕ CLOSE</button>
+            </div>
+
+            @if (_burstKey > 0)
+            {
+                <div @key="_burstKey">
+                    <span class="t38-fly-coin" style="left: 50%; top: 55%;">🪙</span>
+                    <span class="t38-fly-coin" style="left: 45%; top: 58%;">🪙</span>
+                    <span class="t38-fly-coin" style="left: 55%; top: 60%;">🪙</span>
+                </div>
+            }
+
+            @* LiveOps Coin Rush banner (scheduled from the dashboard's LiveOps Events page) *@
+            @if (CoinMultiplier > 1)
+            {
+                <div class="t38-marquee px-4 py-3 text-center" data-testid="coin-rush-banner">
+                    <p class="t38-display text-lg" style="color: var(--t38-amber);">⚡ COIN RUSH — @(CoinMultiplier)× COINS!</p>
+                    <p class="text-[11px] text-white/55">All match and quest Coins are multiplied while the event runs.</p>
+                </div>
+            }
+
+            @* Login streak *@
+            <div class="t38-card px-4 py-3 flex items-center justify-between">
+                <div>
+                    <p class="t38-label text-[10px] text-white/45">Login streak</p>
+                    <p class="t38-display text-2xl text-white">🔥 @Player.LoginStreak.CurrentStreak day@(Player.LoginStreak.CurrentStreak == 1 ? "" : "s")</p>
+                </div>
+                <div class="text-right">
+                    <p class="t38-label text-[10px] text-white/45">Best</p>
+                    <p class="t38-display text-2xl" style="color: var(--t38-amber);">@Player.LoginStreak.BestStreak</p>
+                </div>
+            </div>
+
+            @* ---------- DAILY: today's slate, rerollable for gems ---------- *@
+            <p class="t38-label text-xs text-white/55 mt-1">Daily · reset at midnight UTC</p>
+            @foreach (QuestInfo q in DailySet)
+            {
+                @QuestCard(q, daily: true)
+            }
+
+            @* ---------- SEASON: the long arc across all 38 matchdays ---------- *@
+            @if (SeasonQuests.Count > 0)
+            {
+                <p class="t38-label text-xs text-white/55 mt-2">Season · @LeagueLabel</p>
+                @foreach (QuestInfo q in SeasonQuests)
+                {
+                    @QuestCard(q, daily: false)
+                }
+            }
+
+            <p class="text-[11px] text-white/40 text-center mt-1">Quest coins are transfer money — every claim funds your next signing.</p>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private PlayerModel? Player => MetaplayService.PlayerModel;
+    private GlobalConfig Global => Player!.GameConfig.Global;
+
+    private int _burstKey;
+
+    private int CoinMultiplier => Player != null ? LiveOpsBoosts.CoinMultiplier(Player) : 1;
+
+    private List<QuestInfo> DailySet =>
+        Player != null ? QuestEngine.EffectiveDailySet(Player.GameConfig.Quests.Values, Player.Quests, Global.DailyQuestSlots) : new List<QuestInfo>();
+
+    private List<QuestInfo> SeasonQuests =>
+        Player != null ? Player.GameConfig.Quests.Values.Where(q => q.Scope == QuestScope.Season).ToList() : new List<QuestInfo>();
+
+    private string LeagueLabel => Player?.League.InLeague == true ? "this league season" : "join a league to start";
+
+    // Only treat today's daily progress as live; season progress only when it belongs to the current league.
+    private bool QuestsCurrent => Player != null && Player.Quests.DayKey == QuestEngine.DayOf(MetaTime.Now);
+    private bool SeasonCurrent => Player != null && Player.Quests.SeasonScopeKey == (Player.League.Code ?? "") && Player.League.InLeague;
+
+    private int Progress(QuestInfo q)
+    {
+        if (Player == null) return 0;
+        if (q.Scope == QuestScope.Daily)
+            return QuestsCurrent ? QuestEngine.GetProgress(q, Player.Quests) : 0;
+        return SeasonCurrent ? QuestEngine.GetProgress(q, Player.Quests) : 0;
+    }
+
+    private bool IsClaimed(QuestInfo q)
+    {
+        if (Player == null) return false;
+        if (q.Scope == QuestScope.Daily)
+            return QuestsCurrent && QuestEngine.IsClaimed(q, Player.Quests);
+        return SeasonCurrent && QuestEngine.IsClaimed(q, Player.Quests);
+    }
+
+    private bool CanReroll(QuestInfo q) =>
+        Player != null && q.Scope == QuestScope.Daily && !IsClaimed(q) && Progress(q) < q.Target
+        && QuestEngine.NextRerollCandidate(Player.GameConfig.Quests.Values, Player.Quests, Global.DailyQuestSlots) != null;
+
+    private void Claim(QuestInfo q)
+    {
+        MetaplayService.ClaimQuest(q.Id.Value);
+        _burstKey++;
+    }
+
+    private void Reroll(QuestInfo q)
+    {
+        if (Player != null && Player.Wallet.Get(CurrencyType.Gems) < Global.QuestRerollGemCost)
+        {
+            MetaplayService.RequestShop();
+            return;
+        }
+        MetaplayService.RerollQuest(q.Id.Value);
+    }
+
+    private RenderFragment QuestCard(QuestInfo quest, bool daily) => __builder =>
+    {
+        int prog      = Progress(quest);
+        bool complete = prog >= quest.Target;
+        bool claimed  = IsClaimed(quest);
+        double pct    = quest.Target > 0 ? System.Math.Clamp((double)prog / quest.Target * 100.0, 0, 100) : 100;
+
+        <div class="t38-card px-4 py-3" data-testid="@(daily ? "daily-quest" : "season-quest")">
+            <div class="flex items-center justify-between mb-1.5 gap-2">
+                <span class="text-white" style="font-weight:700;">@quest.Description</span>
+                <span class="text-[11px] whitespace-nowrap" style="color:var(--t38-amber);font-weight:800;">
+                    🪙@quest.RewardCoins@(quest.RewardGems > 0 ? $" 💎{quest.RewardGems}" : "")
+                </span>
+            </div>
+            @if (claimed)
+            {
+                <p class="text-[11px]" style="color:var(--t38-emerald);font-weight:700;">✓ CLAIMED</p>
+            }
+            else if (complete)
+            {
+                <button class="t38-cta t38-shine w-full py-2.5 rounded-xl text-sm t38-tap" data-testid="quest-claim"
+                        @onclick="@(() => Claim(quest))">CLAIM</button>
+            }
+            else
+            {
+                <div class="flex items-center gap-2">
+                    <div class="flex-1" style="background: rgba(255,255,255,0.10); border-radius: 9999px; overflow: hidden; height: 0.55rem;">
+                        <div style="background: linear-gradient(90deg, #46e2ab, #22b07e); height: 100%; width: @(pct)%; transition: width 0.3s;"></div>
+                    </div>
+                    <span class="text-[10px] text-white/45 whitespace-nowrap">@prog / @quest.Target</span>
+                    @if (daily && CanReroll(quest))
+                    {
+                        <button class="text-[10px] px-2 py-1 rounded-full t38-tap" data-testid="quest-reroll"
+                                style="background:rgba(233,185,73,0.14);color:var(--t38-amber);font-weight:700;border:1px solid rgba(233,185,73,0.4);"
+                                @onclick="@(() => Reroll(quest))">🔄 💎@Global.QuestRerollGemCost</button>
+                    }
+                </div>
+            }
+        </div>;
+    };
+
+    protected override void OnInitialized()
+    {
+        MetaplayService.OnStateChanged += OnStateChanged;
+    }
+
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        MetaplayService.OnStateChanged -= OnStateChanged;
+    }
+}

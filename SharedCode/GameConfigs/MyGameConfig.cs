@@ -1,0 +1,73 @@
+using Metaplay.Core.Config;
+using Metaplay.Core.Player;
+
+namespace Game.Logic
+{
+    /// <summary>
+    /// Registry for all game configuration data. Should be used for the game's economy data, entity data (units,
+    /// buildings, etc.), in-app definitions, localization metadata (which languages are supported), etc.
+    /// </summary>
+    public class SharedGameConfig : SharedGameConfigBase
+    {
+        /// <summary>
+        /// Global game configuration values.
+        /// </summary>
+        [GameConfigEntry("Global", isCodeOnly: true, requireArchiveEntry: false)]
+        public GlobalConfig Global { get; private set; } = new GlobalConfig();
+
+        /// <summary>
+        /// WC2026 national teams and their squads. The LiveOps "form sync" event edits player ratings here.
+        /// </summary>
+        [GameConfigEntry("Teams", isCodeOnly: true, requireArchiveEntry: false)]
+        public GameConfigLibrary<TeamId, TeamInfo> Teams { get; private set; } = TeamContent.CreateTeamsLibrary();
+
+        /// <summary>
+        /// Country tiers for PPP-based pricing and segmentation.
+        /// </summary>
+        [GameConfigEntry("CountryTiers", isCodeOnly: true, requireArchiveEntry: false)]
+        public GameConfigLibrary<CountryTierId, CountryTierInfo> CountryTiers { get; private set; } = CountryTierContent.CreateCountryTiersLibrary();
+
+        /// <summary>
+        /// Player segments for targeting (activity, spending, country tiers).
+        /// </summary>
+        [GameConfigEntry("PlayerSegments", isCodeOnly: true, requireArchiveEntry: false)]
+        public GameConfigLibrary<PlayerSegmentId, PlayerSegmentInfo> PlayerSegments { get; private set; } = PlayerSegmentContent.CreatePlayerSegmentsLibrary();
+
+        /// <summary>
+        /// Cosmetic catalog (manager avatars + dice skins), bought with Gems.
+        /// </summary>
+        [GameConfigEntry("Cosmetics", isCodeOnly: true, requireArchiveEntry: false)]
+        public GameConfigLibrary<string, CosmeticItem> Cosmetics { get; private set; } = CosmeticContent.CreateLibrary();
+
+        /// <summary>
+        /// FOOTDRAFT legend corpus the spin-draft picks from (P1). ⚠ internal-only real names.
+        /// Sheet-backed: built from the "Legends" tab (all club-season squads); code default until published.
+        /// </summary>
+        [GameConfigEntry("Legends", requireArchiveEntry: false)]
+        public GameConfigLibrary<LegendId, LegendPlayer> Legends { get; private set; } = LegendContent.CreateLibrary();
+
+        /// <summary>
+        /// Draftable formations (slot → position) the manager fills during the draft.
+        /// Sheet-backed: built from the "Formations" tab; code default until published.
+        /// </summary>
+        [GameConfigEntry("Formations", requireArchiveEntry: false)]
+        public GameConfigLibrary<FormationId, FormationInfo> Formations { get; private set; } = FormationContent.CreateLibrary();
+
+        /// <summary>
+        /// Season-league templates: the daily league's size, 7pm sim time, default formation and scripted
+        /// matchday events. The LeagueActor reads the "default" definition; tunable from the dashboard.
+        /// Sheet-backed: built from the "LeagueDefinitions" tab; code default until published.
+        /// </summary>
+        [GameConfigEntry("LeagueDefinitions", requireArchiveEntry: false)]
+        public GameConfigLibrary<LeagueDefinitionId, LeagueDefinition> LeagueDefinitions { get; private set; } = LeagueDefinitionContent.CreateLibrary();
+
+        /// <summary>
+        /// Daily quests (WS4 retention): rotating per-day objectives that grant Coins.
+        /// Sheet-backed: built from the "Quests" tab of the Footdraft Game Config sheet (dashboard Game Configs →
+        /// New build → Publish). When the archive has no Quests entry (e.g. fresh local boot before any sheet
+        /// build), the code-defined default below is used — a missing optional entry is skipped on import.
+        /// </summary>
+        [GameConfigEntry("Quests", requireArchiveEntry: false)]
+        public GameConfigLibrary<QuestId, QuestInfo> Quests { get; private set; } = QuestContent.CreateLibrary();
+    }
+}

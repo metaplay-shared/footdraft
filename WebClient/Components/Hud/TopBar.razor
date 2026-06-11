@@ -1,0 +1,118 @@
+@using System.Linq
+@using Game.Logic
+@using WebClientBase.Services
+@inject MetaplayClientService MetaplayService
+@implements IDisposable
+
+@* Persistent currency HUD (top-grossing-casual style): manager level on the left, Coins + Gems pills on the
+   right, each with a ⊕ that opens the Shop. Rendered once by Home (which stays mounted for the app's life) and
+   floats above the league hub and every overlay (z-60 > their z-40/45). Balances count up/down with a pulse
+   when they change — every claim anywhere in the meta visibly lands here. Also owns the single Shop mount so
+   any "insufficient funds" moment can summon it via MetaplayService.RequestShop(). *@
+
+@if (Show && Player != null && !MetaplayService.IsInMatch)
+{
+    <div class="t38-hud fixed top-0 inset-x-0 z-[60]" data-testid="hud">
+        <div class="mx-auto flex items-center gap-2 px-3" style="max-width: 26rem; height: var(--t38-hud-h);">
+            <div class="t38-hud-pill flex items-center gap-1.5 px-3 py-1.5 text-xs text-white" data-testid="hud-level">
+                <span>⚽</span><span>LV @Player.PlayerLevel</span>
+            </div>
+            <div class="flex-1"></div>
+            <div @key="@($"c{_coinPulseKey}")" class="t38-hud-pill flex items-center gap-1.5 pl-3 pr-1.5 py-1 text-sm text-white @(_coinPulseKey > 0 ? "t38-pulse" : "")">
+                <span>🪙</span>
+                <span class="t38-countdown" data-testid="hud-coins">@_shownCoins.ToString("N0")</span>
+                <button class="t38-hud-plus t38-tap" data-testid="hud-shop-coins" @onclick="@(() => MetaplayService.RequestShop())">＋</button>
+            </div>
+            <div @key="@($"g{_gemPulseKey}")" class="t38-hud-pill flex items-center gap-1.5 pl-3 pr-1.5 py-1 text-sm text-white @(_gemPulseKey > 0 ? "t38-pulse" : "")">
+                <span>💎</span>
+                <span class="t38-countdown" data-testid="hud-gems">@_shownGems.ToString("N0")</span>
+                <button class="t38-hud-plus t38-tap" data-testid="hud-shop-gems" @onclick="@(() => MetaplayService.RequestShop())">＋</button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (MetaplayService.ShopOpen)
+{
+    <ShopHub OnClose="@(() => MetaplayService.CloseShop())" />
+}
+
+@code {
+    /// <summary> Parent-controlled visibility (hidden on the fresh-install menu hero). </summary>
+    [Parameter] public bool Show { get; set; }
+
+    private PlayerModel? Player => MetaplayService.PlayerModel;
+
+    private long _shownCoins;
+    private long _shownGems;
+    private long _lastCoins = -1;
+    private long _lastGems  = -1;
+    private int  _coinPulseKey;
+    private int  _gemPulseKey;
+    private bool _animating;
+    private bool _disposed;
+
+    private long Coins => Player?.Wallet.Get(CurrencyType.Coins) ?? 0;
+    private long Gems  => Player?.Wallet.Get(CurrencyType.Gems) ?? 0;
+
+    protected override void OnInitialized()
+    {
+        MetaplayService.OnStateChanged += OnServiceChanged;
+    }
+
+    private void OnServiceChanged()
+    {
+        // Always repaint — this is also how ShopOpen/visibility changes reach this component.
+        InvokeAsync(StateHasChanged);
+        if (Player == null)
+            return;
+        long coins = Coins;
+        long gems  = Gems;
+        if (_lastCoins < 0)
+        {
+            // First sight of the wallet: snap, don't count up from zero on load.
+            _lastCoins = _shownCoins = coins;
+            _lastGems  = _shownGems  = gems;
+            return;
+        }
+        bool changed = false;
+        if (coins != _lastCoins) { _lastCoins = coins; _coinPulseKey++; changed = true; }
+        if (gems  != _lastGems)  { _lastGems  = gems;  _gemPulseKey++;  changed = true; }
+        if (changed)
+            _ = InvokeAsync(AnimateWalletAsync);
+    }
+
+    /// <summary> Ease the displayed balances toward the real ones (~1/5 of the gap per 30ms frame). </summary>
+    private async Task AnimateWalletAsync()
+    {
+        if (_animating)
+            return;
+        _animating = true;
+        try
+        {
+            while (!_disposed && (_shownCoins != _lastCoins || _shownGems != _lastGems))
+            {
+                _shownCoins = StepToward(_shownCoins, _lastCoins);
+                _shownGems  = StepToward(_shownGems, _lastGems);
+                StateHasChanged();
+                await Task.Delay(30);
+            }
+        }
+        finally { _animating = false; }
+    }
+
+    private static long StepToward(long current, long target)
+    {
+        long diff = target - current;
+        if (diff == 0)
+            return current;
+        long step = Math.Max(1L, Math.Abs(diff) / 5);
+        return current + Math.Sign(diff) * step;
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        MetaplayService.OnStateChanged -= OnServiceChanged;
+    }
+}

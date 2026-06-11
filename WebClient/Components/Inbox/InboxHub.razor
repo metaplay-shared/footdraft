@@ -1,0 +1,128 @@
+@using System
+@using System.Linq
+@using Game.Logic
+@using Metaplay.Core
+@using Metaplay.Core.InGameMail
+@using Metaplay.Core.Localization
+@using Metaplay.Core.Player
+@using Metaplay.Core.Rewards
+@using WebClientBase.Services
+@inject MetaplayClientService MetaplayService
+@implements IDisposable
+
+@* In-game inbox: mail + broadcasts sent from the LiveOps Dashboard land here; attached rewards are claimed
+   with the SDK's PlayerConsumeMail. Styled to the 38-0-20 theme. *@
+
+<div class="t38-bg fixed inset-0 z-40 overflow-y-auto t38-under-hud" style="padding: calc(1rem + env(safe-area-inset-top)) 1rem calc(2rem + env(safe-area-inset-bottom));">
+    <div class="w-full mx-auto flex flex-col gap-3" style="max-width: 30rem;">
+        <div class="flex items-center justify-between">
+            <h1 class="t38-display text-2xl text-white">INBOX</h1>
+            <button class="text-xs px-3 py-1.5 rounded-xl" style="background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.6);"
+                    @onclick="OnClose">✕ CLOSE</button>
+        </div>
+
+        @if (Player == null)
+        {
+            <p class="text-center text-white/50 mt-10">Loading…</p>
+        }
+        else if (Player.MailInbox.Count == 0)
+        {
+            <div class="t38-card px-4 py-8 text-center">
+                <p class="text-3xl mb-2">📭</p>
+                <p class="text-sm text-white/55">No messages yet.</p>
+                <p class="text-[11px] text-white/35 mt-1">News, gifts and event announcements arrive here.</p>
+            </div>
+        }
+        else
+        {
+            @foreach (PlayerMailItem mail in Player.MailInbox.OrderByDescending(m => m.SentAt))
+            {
+                <div class="t38-card px-4 py-3" data-testid="inbox-mail" style="@(mail.IsRead ? "opacity:0.75;" : "")">
+                    <div class="flex items-center justify-between">
+                        <span class="text-sm text-white/95" style="font-weight:800;">@(mail.IsRead ? "" : "● ")@TitleOf(mail)</span>
+                        <span class="text-[10px] text-white/35">@mail.SentAt.ToDateTime().ToString("d MMM")</span>
+                    </div>
+                    @if (!string.IsNullOrEmpty(BodyOf(mail)))
+                    {
+                        <p class="text-xs text-white/65 mt-1" style="white-space:pre-line;">@BodyOf(mail)</p>
+                    }
+                    @{ List<MetaPlayerRewardBase> rewards = RewardsOf(mail); }
+                    @if (rewards.Count > 0)
+                    {
+                        <div class="flex items-center gap-2 mt-2 flex-wrap">
+                            @foreach (MetaPlayerRewardBase reward in rewards)
+                            {
+                                <span class="text-[11px] px-2 py-0.5 rounded-lg" style="background:rgba(233,185,73,0.14);color:var(--t38-amber);font-weight:700;">@RewardLabel(reward)</span>
+                            }
+                        </div>
+                    }
+                    <div class="flex items-center gap-2 mt-2">
+                        @if (rewards.Count > 0 && !mail.HasBeenConsumed)
+                        {
+                            <button class="t38-cta text-sm flex-1 py-2 t38-tap" data-testid="claim-mail"
+                                    @onclick="@(() => Claim(mail))">CLAIM</button>
+                        }
+                        else
+                        {
+                            @if (mail.HasBeenConsumed)
+                            {
+                                <span class="text-[11px] text-white/40 flex-1">✓ claimed</span>
+                            }
+                            else if (!mail.IsRead)
+                            {
+                                <button class="t38-ghost text-xs flex-1 py-1.5 t38-tap"
+                                        @onclick="@(() => MetaplayService.SetMailRead(mail.Contents.Id, true))">MARK READ</button>
+                            }
+                            else
+                            {
+                                <span class="flex-1"></span>
+                            }
+                            <button class="text-[11px] text-white/35 px-2 py-1 t38-tap" data-testid="delete-mail"
+                                    @onclick="@(() => MetaplayService.DeleteMail(mail.Contents.Id))">delete</button>
+                        }
+                    </div>
+                </div>
+            }
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private PlayerModel? Player => MetaplayService.PlayerModel;
+
+    private static string TitleOf(PlayerMailItem mail) =>
+        mail.Contents is SimplePlayerMail simple ? (simple.Title.Localize() ?? "Message") : "Message";
+
+    private static string BodyOf(PlayerMailItem mail) =>
+        mail.Contents is SimplePlayerMail simple ? (simple.Body.Localize() ?? "") : "";
+
+    private static List<MetaPlayerRewardBase> RewardsOf(PlayerMailItem mail) =>
+        mail.Contents.ConsumableRewards?.ToList() ?? new List<MetaPlayerRewardBase>();
+
+    private static string RewardLabel(MetaPlayerRewardBase reward) => reward switch
+    {
+        RewardCurrency c => $"{c.Amount} {c.Currency}",
+        _ => reward.GetType().Name,
+    };
+
+    private void Claim(PlayerMailItem mail)
+    {
+        MetaplayService.ConsumeMail(mail.Contents.Id);
+        MetaplayService.SetMailRead(mail.Contents.Id, true);
+    }
+
+    protected override void OnInitialized()
+    {
+        MetaplayService.OnStateChanged += OnStateChanged;
+        // Opening the inbox marks nothing automatically — unread dots clear per-mail via MARK READ / CLAIM.
+    }
+
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        MetaplayService.OnStateChanged -= OnStateChanged;
+    }
+}

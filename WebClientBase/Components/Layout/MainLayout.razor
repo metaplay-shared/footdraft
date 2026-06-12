@@ -60,6 +60,19 @@
     @Body
 </main>
 
+@* Persistent "made with" credit, floating at the very bottom over every screen. The container is
+   click-through (pointer-events:none); only the link itself re-enables pointer events, so it never
+   blocks the action bars or in-match controls underneath it. z-[55] sits above the hubs (z-40/45)
+   but below the currency HUD (z-60). *@
+<footer class="fixed bottom-0 left-0 right-0 z-[55] flex justify-center"
+        style="pointer-events: none; padding-bottom: calc(0.45rem + env(safe-area-inset-bottom));">
+    <span class="px-2.5 py-1 rounded-full text-[10px] whitespace-nowrap"
+          style="color: var(--text-muted); background: rgba(0,0,0,0.35); backdrop-filter: blur(4px);">
+        Made with <a href="https://metaplay.io/ai" target="_blank" rel="noopener noreferrer"
+                     style="pointer-events: auto; color: var(--text-secondary); text-decoration: underline; text-underline-offset: 2px;">Metaplay Agent</a> as a sample project
+    </span>
+</footer>
+
 @code {
     /// <summary>
     /// Custom branding content for the header. If not provided, uses default branding from WebClientConfig.

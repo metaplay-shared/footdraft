@@ -181,7 +181,14 @@
     private FormationInfo? Formation =>
         Player != null && Config != null && Draft.HasFormation && Config.Formations.TryGetValue(Draft.Formation, out FormationInfo? f) ? f : null;
 
-    private LegendPlayer? Lookup(LegendId id) => Config != null && Config.Legends.TryGetValue(id, out LegendPlayer? p) ? p : null;
+    // Resolve against BOTH the legend corpus and the World Cup squads — DraftHub is shared by the Draft Cup
+    // (legends) and the World Cup (national-team players). Legends-only here = the WC spin shows "no players
+    // available" because WC candidate ids never resolve. Mirrors PlayerModel.ResolveDraftPlayer.
+    private LegendPlayer? Lookup(LegendId id) =>
+        Config == null ? null
+        : Config.Legends.TryGetValue(id, out LegendPlayer? p) ? p
+        : Config.WorldCupPlayers.TryGetValue(id, out LegendPlayer? w) ? w
+        : null;
 
     private List<LegendPlayer> PickedLegends()
     {

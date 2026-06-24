@@ -1,0 +1,359 @@
+@using System.Collections.Generic
+@using System.Linq
+@using Game.Logic
+@using Metaplay.Core
+@using WebClientBase.Services
+@inject MetaplayClientService MetaplayService
+@implements IDisposable
+
+@* FOOTDRAFT manager profile: avatar + level, career record, the trophy cabinet, achievements, and "My Club" —
+   the gallery of every player the manager has ever drafted (scouted). The live-service identity screen. *@
+
+<div class="t38-bg fixed inset-0 z-40 overflow-y-auto t38-under-hud" data-testid="profile-panel"
+     style="padding: calc(1rem + env(safe-area-inset-top)) 1rem calc(2rem + env(safe-area-inset-bottom));">
+    <div class="w-full mx-auto flex flex-col gap-3" style="max-width: 30rem;">
+
+        @if (Player == null || Config == null)
+        {
+            <p class="text-center text-white/50 mt-10">Loading…</p>
+        }
+        else
+        {
+            <div class="flex items-center justify-between">
+                <h1 class="t38-display text-2xl text-white">PROFILE</h1>
+                <button class="text-xs px-3 py-1.5 rounded-xl" style="background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.6);"
+                        @onclick="OnClose">✕ CLOSE</button>
+            </div>
+
+            @* ---------- Identity card ---------- *@
+            <div class="t38-tile-hero px-5 py-5 flex items-center gap-4" data-testid="profile-identity">
+                <button class="flex items-center justify-center rounded-full t38-tap relative" data-testid="open-looks"
+                        style="width:4.5rem;height:4.5rem;background:rgba(255,255,255,0.06);border:1px solid var(--t38-line);font-size:2.4rem;"
+                        @onclick="@(() => _showLooks = true)" title="Change your look">
+                    @AvatarGlyph
+                    <span class="absolute -bottom-1 -right-1 text-xs">✏️</span>
+                </button>
+                <div class="flex-1 min-w-0">
+                    <div class="t38-display text-xl text-white truncate">@DisplayName</div>
+                    <div class="flex items-center gap-2 mt-1">
+                        <span class="t38-label text-[10px] px-2 py-0.5 rounded-full" style="background:rgba(233,185,73,0.16);color:var(--t38-amber);">LV @Player.PlayerLevel</span>
+                        <span class="t38-label text-[10px] text-white/45">@Honours.TotalTrophies 🏆 · @EarnedAchievements/@TotalAchievements badges</span>
+                    </div>
+                    <div class="t38-xpbar mt-2" style="background:rgba(255,255,255,0.10);border-radius:9999px;overflow:hidden;height:0.4rem;">
+                        <div style="background:linear-gradient(90deg,#ffe27a,#f5a623);height:100%;width:@(XpPercent)%;"></div>
+                    </div>
+                    <p class="text-[9px] text-white/40 mt-0.5 text-right">@XpLabel</p>
+                </div>
+            </div>
+
+            @* ---------- Tabs ---------- *@
+            <div class="flex gap-2">
+                <button class="flex-1 text-xs py-2 rounded-xl t38-tap" style="@TabStyle("profile")" data-testid="tab-profile" @onclick="@(() => _tab = "profile")">🏅 Career</button>
+                <button class="flex-1 text-xs py-2 rounded-xl t38-tap relative" style="@TabStyle("obj")" data-testid="tab-objectives" @onclick="@(() => _tab = "obj")"><span>🎯 Goals</span>@if (ClaimableObjectives > 0) { <span class="t38-badge">@ClaimableObjectives</span> }</button>
+                <button class="flex-1 text-xs py-2 rounded-xl t38-tap" style="@TabStyle("club")" data-testid="tab-club" @onclick="@(() => _tab = "club")">🗂️ My Club</button>
+            </div>
+
+            @if (_tab == "profile")
+            {
+                @* ---------- Career record ---------- *@
+                <div class="t38-card px-4 py-3">
+                    <span class="t38-label text-[10px] text-white/45">Career record</span>
+                    <div class="grid grid-cols-4 gap-2 mt-2 text-center">
+                        @StatCell("Played", Player.Progression.MatchesPlayed.ToString())
+                        @StatCell("Won", Player.Progression.MatchesWon.ToString())
+                        @StatCell("Win %", WinPct + "%")
+                        @StatCell("Best run", Player.Progression.BestWinStreak.ToString())
+                    </div>
+                </div>
+
+                @* ---------- Trophy cabinet ---------- *@
+                <div class="t38-card px-4 py-3">
+                    <div class="flex items-center justify-between">
+                        <span class="t38-label text-[10px] text-white/45">Trophy cabinet</span>
+                        <span class="t38-display text-lg" style="color:var(--t38-amber);">@Honours.TotalTrophies 🏆</span>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2 mt-2">
+                        @TrophyTile("🌍", "World Cup", Honours.WorldCupTitles, WcBestLabel)
+                        @TrophyTile("🏆", "Draft Cup", Honours.DraftCupTitles, DraftCupBestLabel)
+                        @TrophyTile("🥇", "Bracket Cup", Honours.BracketTitles, BracketBestLabel)
+                        @TrophyTile("👑", "League", Honours.LeagueTitles, LeagueLabel)
+                    </div>
+                </div>
+
+                @* ---------- All-time peaks ---------- *@
+                <div class="t38-card px-4 py-3 flex items-center justify-around text-center">
+                    <div>
+                        <div class="t38-display text-xl text-white">@(Honours.BestDraftedXiOvr > 0 ? Honours.BestDraftedXiOvr.ToString() : "—")</div>
+                        <span class="t38-label text-[9px] text-white/40">BEST XI OVR</span>
+                    </div>
+                    <div style="width:1px;height:2rem;background:var(--t38-line);"></div>
+                    <div>
+                        <div class="t38-display text-xl text-white">@RankDivisionLabel</div>
+                        <span class="t38-label text-[9px] text-white/40">PEAK DIVISION</span>
+                    </div>
+                    <div style="width:1px;height:2rem;background:var(--t38-line);"></div>
+                    <div>
+                        <div class="t38-display text-xl text-white">@Coll.UniqueScouted</div>
+                        <span class="t38-label text-[9px] text-white/40">SCOUTED</span>
+                    </div>
+                </div>
+
+                @* ---------- Achievements ---------- *@
+                <div class="t38-card px-4 py-3">
+                    <span class="t38-label text-[10px] text-white/45">Achievements · @EarnedAchievements/@TotalAchievements</span>
+                    <div class="flex flex-col gap-1.5 mt-2">
+                        @foreach (AchievementDef a in Achievements.All)
+                        {
+                            bool earned = a.IsEarned(Player);
+                            int cur = System.Math.Min(a.Current(Player), a.Target);
+                            <div class="flex items-center gap-3 px-2 py-1.5 rounded-lg" data-testid="achievement"
+                                 style="@(earned ? "background:rgba(52,211,154,0.12);" : "background:rgba(255,255,255,0.03);")">
+                                <span class="text-xl" style="@(earned ? "" : "filter:grayscale(1) opacity(0.5);")">@a.Icon</span>
+                                <div class="flex-1 min-w-0">
+                                    <div class="text-xs @(earned ? "text-white" : "text-white/55")" style="font-weight:700;">@a.Name @(earned ? "✓" : "")</div>
+                                    <div class="text-[10px] text-white/40 truncate">@a.Desc</div>
+                                    @if (!earned && a.Target > 1)
+                                    {
+                                        <div class="mt-1" style="background:rgba(255,255,255,0.08);border-radius:9999px;height:0.25rem;overflow:hidden;">
+                                            <div style="background:var(--t38-emerald);height:100%;width:@(cur * 100 / a.Target)%;"></div>
+                                        </div>
+                                    }
+                                </div>
+                                @if (!earned && a.Target > 1)
+                                {
+                                    <span class="text-[10px] text-white/35">@cur/@a.Target</span>
+                                }
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
+            else if (_tab == "obj")
+            {
+                @* ---------- Objectives: claimable career reward track ---------- *@
+                <div class="t38-card px-4 py-3">
+                    <span class="t38-label text-[10px] text-white/45">Objectives · @ClaimableObjectives ready to claim</span>
+                    <div class="flex flex-col gap-1.5 mt-2">
+                        @foreach (ObjectiveDef o in Objectives.All)
+                        {
+                            bool complete = Objectives.IsComplete(o, Player);
+                            bool claimed = Objectives.IsClaimed(o, Player);
+                            int cur = System.Math.Min(o.Current(Player), o.Target);
+                            <div class="flex items-center gap-3 px-2 py-2 rounded-lg" data-testid="objective"
+                                 style="@(complete && !claimed ? "background:rgba(233,185,73,0.14);" : "background:rgba(255,255,255,0.03);")">
+                                <span class="text-xl" style="@(complete ? "" : "filter:grayscale(1) opacity(0.5);")">@o.Icon</span>
+                                <div class="flex-1 min-w-0">
+                                    <div class="text-xs @(claimed ? "text-white/50" : "text-white")" style="font-weight:700;">@o.Name @(claimed ? "✓" : "")</div>
+                                    <div class="text-[10px] text-white/40 truncate">@o.Desc · @RewardText(o)</div>
+                                    @if (!complete && o.Target > 1)
+                                    {
+                                        <div class="mt-1" style="background:rgba(255,255,255,0.08);border-radius:9999px;height:0.25rem;overflow:hidden;">
+                                            <div style="background:var(--t38-emerald);height:100%;width:@(cur * 100 / o.Target)%;"></div>
+                                        </div>
+                                    }
+                                </div>
+                                @if (claimed)
+                                {
+                                    <span class="text-[10px] text-white/35">claimed</span>
+                                }
+                                else if (complete)
+                                {
+                                    <button class="t38-cta text-xs px-3 py-1.5 t38-tap" data-testid="claim-objective"
+                                            @onclick="@(() => MetaplayService.ClaimObjective(o.Id))">CLAIM</button>
+                                }
+                                else
+                                {
+                                    <span class="text-[10px] text-white/35">@cur/@o.Target</span>
+                                }
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
+            else
+            {
+                @* ---------- My Club: scouted-player collection ---------- *@
+                <div class="t38-card px-4 py-3">
+                    <div class="flex items-center justify-between">
+                        <span class="t38-label text-[10px] text-white/45">My Club</span>
+                        <span class="text-[11px] text-white/55">@Coll.UniqueScouted scouted · @Coll.TotalDrafted drafts</span>
+                    </div>
+                    <div class="flex items-center gap-1.5 flex-wrap mt-2">
+                        @foreach ((string key, string label) in PosFilters)
+                        {
+                            bool sel = _posFilter == key;
+                            <button class="text-[11px] px-3 py-1 rounded-full t38-tap"
+                                    style="@(sel ? "background:var(--t38-emerald);color:#05140d;font-weight:700;" : "background:rgba(255,255,255,0.06);color:#fff;")"
+                                    @onclick="@(() => _posFilter = key)">@label</button>
+                        }
+                    </div>
+                </div>
+
+                @if (ScoutedCards.Count == 0)
+                {
+                    <div class="t38-card px-5 py-8 flex flex-col items-center text-center">
+                        <span class="text-4xl mb-2">🔭</span>
+                        <p class="text-sm text-white/70">No players scouted yet</p>
+                        <p class="text-[11px] text-white/40 mt-1">Draft an XI in the World Cup or Draft Cup and your players join your club here.</p>
+                    </div>
+                }
+                else
+                {
+                    <div class="grid grid-cols-2 gap-2">
+                        @foreach ((LegendPlayer p, int times) in ScoutedCards)
+                        {
+                            <div class="t38-card px-3 py-2.5 flex items-center gap-2.5" data-testid="club-player">
+                                <span class="w-10 h-10 rounded-lg flex items-center justify-center text-base @PosBg(p.Position)" style="font-weight:800;">@p.Ovr</span>
+                                <div class="flex-1 min-w-0">
+                                    <div class="text-xs text-white truncate" style="font-weight:700;">@ShortName(p.Name)</div>
+                                    <div class="text-[10px] text-white/40 truncate">@p.Nation</div>
+                                </div>
+                                @if (times > 1)
+                                {
+                                    <span class="text-[9px] text-white/40">×@times</span>
+                                }
+                            </div>
+                        }
+                    </div>
+                    @if (_shown < FilteredScouted.Count)
+                    {
+                        <button class="text-[11px] py-2 rounded-xl t38-tap" style="background:rgba(255,255,255,0.05);color:rgba(255,255,255,0.7);"
+                                @onclick="@(() => _shown += 30)">Show more (@(FilteredScouted.Count - _shown) more)</button>
+                    }
+                }
+            }
+        }
+    </div>
+</div>
+
+@* ---------- Cosmetics locker (equip avatars / dice skins earned from packs, bundles, gems) ---------- *@
+@if (_showLooks)
+{
+    <CosmeticsHub OnClose="@(() => _showLooks = false)" />
+}
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private bool _showLooks;
+    private string _tab = "profile";
+    private string _posFilter = "ALL";
+    private int _shown = 30;
+
+    private PlayerModel? Player => MetaplayService.PlayerModel;
+    private SharedGameConfig? Config => Player?.GameConfig;
+    private GlobalConfig Global => Config!.Global;
+    private PlayerHonours Honours => Player!.Honours;
+    private PlayerCollection Coll => Player!.Collection;
+
+    private string DisplayName => string.IsNullOrWhiteSpace(Player?.TeamName) ? (Player?.PlayerName ?? "Manager") : Player!.TeamName;
+
+    private string AvatarGlyph =>
+        Config != null && Player != null && Config.Cosmetics.TryGetValue(Player.Cosmetics.EquippedAvatar ?? "", out CosmeticItem? c) && !string.IsNullOrEmpty(c!.Glyph)
+            ? c.Glyph : "🧑‍💼";
+
+    private int TotalAchievements => Achievements.All.Length;
+    private int EarnedAchievements => Player != null ? Achievements.EarnedCount(Player) : 0;
+    private int ClaimableObjectives => Player != null ? Objectives.ClaimableCount(Player) : 0;
+
+    private static string RewardText(ObjectiveDef o)
+    {
+        List<string> parts = new List<string>();
+        if (o.Coins > 0)  parts.Add($"🪙{o.Coins}");
+        if (o.Gems > 0)   parts.Add($"💎{o.Gems}");
+        if (o.Shards > 0) parts.Add($"🔩{o.Shards}");
+        return string.Join(" ", parts);
+    }
+
+    private int WinPct => Player is { Progression.MatchesPlayed: > 0 } ? Player.Progression.MatchesWon * 100 / Player.Progression.MatchesPlayed : 0;
+
+    private double XpPercent
+    {
+        get
+        {
+            if (Player == null) return 0;
+            long need = Global.XpToReachNextLevel(Player.PlayerLevel);
+            if (need <= 0) return 100;
+            return System.Math.Clamp((double)Player.Progression.Xp / need * 100.0, 0, 100);
+        }
+    }
+    private string XpLabel => Player == null ? "" :
+        Player.PlayerLevel >= Global.MaxManagerLevel ? "MAX LEVEL" : $"{Player.Progression.Xp} / {Global.XpToReachNextLevel(Player.PlayerLevel)} XP";
+
+    private string WcBestLabel => Honours.WorldCupBestRound >= 0 ? "best: " + WorldCup.RoundName(Global, Honours.WorldCupBestRound) : $"{Honours.WorldCupRuns} runs";
+    private string DraftCupBestLabel => Honours.DraftCupBestRound >= 0 ? "best: " + DraftCup.RoundName(Honours.DraftCupBestRound) : $"{Honours.DraftCupRuns} runs";
+    private string BracketBestLabel => Honours.BracketBestRound >= 0 ? $"best: R{Honours.BracketBestRound + 1}" : "—";
+    private string LeagueLabel => Honours.InvincibleSeasons > 0 ? $"{Honours.InvincibleSeasons}× invincible" : $"{Honours.LeagueSeasonsPlayed} seasons";
+
+    private string RankDivisionLabel
+    {
+        get
+        {
+            if (Config == null || Global.RankDivisions.Length == 0) return "—";
+            int idx = System.Math.Clamp(Honours.BestRankDivision, 0, Global.RankDivisions.Length - 1);
+            return Global.RankDivisions[idx].Emoji;
+        }
+    }
+
+    private (string, string)[] PosFilters => new[] { ("ALL", "All"), ("GK", "GK"), ("DEF", "DEF"), ("MID", "MID"), ("FWD", "FWD") };
+
+    private LegendPlayer? Lookup(string id) =>
+        Config == null ? null
+        : Config.Legends.TryGetValue(LegendId.FromString(id), out LegendPlayer? l) ? l
+        : Config.WorldCupPlayers.TryGetValue(LegendId.FromString(id), out LegendPlayer? w) ? w
+        : null;
+
+    // Scouted players resolved + sorted by OVR (desc), filtered by position. Computed lazily per render.
+    private List<(LegendPlayer Player, int Times)> FilteredScouted
+    {
+        get
+        {
+            List<(LegendPlayer, int)> all = new List<(LegendPlayer, int)>();
+            if (Player == null) return all;
+            foreach ((string id, int times) in Coll.Drafted)
+            {
+                LegendPlayer? p = Lookup(id);
+                if (p == null) continue;
+                if (_posFilter != "ALL" && PosShort(p.Position) != _posFilter) continue;
+                all.Add((p, times));
+            }
+            all.Sort((a, b) => b.Item1.Ovr.CompareTo(a.Item1.Ovr));
+            return all;
+        }
+    }
+
+    private List<(LegendPlayer Player, int Times)> ScoutedCards => FilteredScouted.Take(_shown).ToList();
+
+    private string TabStyle(string tab) => _tab == tab
+        ? "background:rgba(52,211,154,0.16);border:1px solid var(--t38-emerald);color:var(--t38-emerald);font-weight:700;"
+        : "background:rgba(255,255,255,0.05);border:1px solid var(--t38-line);color:rgba(255,255,255,0.6);";
+
+    private RenderFragment StatCell(string label, string value) => @<div>
+        <div class="t38-display text-lg text-white">@value</div>
+        <span class="t38-label text-[9px] text-white/40">@label</span>
+    </div>;
+
+    private RenderFragment TrophyTile(string icon, string name, int count, string sub) => @<div class="px-3 py-2.5 rounded-xl flex items-center gap-2.5"
+        style="@(count > 0 ? "background:rgba(233,185,73,0.12);border:1px solid rgba(233,185,73,0.3);" : "background:rgba(255,255,255,0.03);")">
+        <span class="text-2xl" style="@(count > 0 ? "" : "filter:grayscale(1) opacity(0.5);")">@icon</span>
+        <div class="flex-1 min-w-0">
+            <div class="text-[11px] text-white/70 truncate">@name</div>
+            <div class="t38-display text-lg" style="@(count > 0 ? "color:var(--t38-amber);" : "color:rgba(255,255,255,0.5);")">@count</div>
+            <div class="text-[9px] text-white/35 truncate">@sub</div>
+        </div>
+    </div>;
+
+    private static string PosShort(Position p) => p switch { Position.GK => "GK", Position.DEF => "DEF", Position.MID => "MID", _ => "FWD" };
+    private static string PosBg(Position p) => p switch { Position.GK => "t38-pos-gk", Position.DEF => "t38-pos-def", Position.MID => "t38-pos-mid", _ => "t38-pos-fwd" };
+
+    private static string ShortName(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return name;
+        string[] parts = name.Split(' ');
+        return parts.Length > 1 ? parts[parts.Length - 1] : name;
+    }
+
+    protected override void OnInitialized() => MetaplayService.OnStateChanged += OnStateChanged;
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+    public void Dispose() => MetaplayService.OnStateChanged -= OnStateChanged;
+}

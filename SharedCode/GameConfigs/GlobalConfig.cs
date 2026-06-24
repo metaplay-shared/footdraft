@@ -164,6 +164,62 @@ namespace Game.Logic
         /// <summary> How many daily quests are active at once (the first N daily-scope quests in config order). </summary>
         [MetaMember(115)] public int DailyQuestSlots { get; private set; } = 3;
 
+        // --- Draft Cup (FUT-Draft-style paid mode: pay entry → draft a one-off XI → knockout reward ladder) ---
+        [MetaMember(116)] public int DraftCupEntryCoins         { get; private set; } = 150;
+        [MetaMember(117)] public int DraftCupEntryGems          { get; private set; } = 30;  // premium tier (Gems)
+        [MetaMember(118)] public int DraftCupOpponentBaseOvr    { get; private set; } = 72;
+        [MetaMember(119)] public int DraftCupOpponentOvrPerRound { get; private set; } = 4;
+        /// <summary> Premium-tier reward boost (%): premium rewards = standard × (100 + this) / 100. </summary>
+        [MetaMember(120)] public int DraftCupPremiumBonusPct    { get; private set; } = 60;
+        /// <summary> Reward for winning each Draft Cup round (0 = Round of 16 … 3 = Final / champion). </summary>
+        [MetaMember(121)] public BracketRoundReward[] DraftCupRoundRewards { get; private set; } = new BracketRoundReward[]
+        {
+            new BracketRoundReward(coins: 120,  gems: 2,  shards: 4),
+            new BracketRoundReward(coins: 250,  gems: 5,  shards: 8),
+            new BracketRoundReward(coins: 500,  gems: 10, shards: 16),
+            new BracketRoundReward(coins: 1000, gems: 25, shards: 30),
+        };
+
+        // --- World Cup 2026 (draft a one-off XI from real WC squads → knockout vs real nations) ---
+        [MetaMember(122)] public int WorldCupEntryCoins      { get; private set; } = 200;
+        [MetaMember(123)] public int WorldCupEntryGems       { get; private set; } = 40;  // premium tier (Gems)
+        /// <summary> Premium-tier reward boost (%): premium rewards = standard × (100 + this) / 100. </summary>
+        [MetaMember(124)] public int WorldCupPremiumBonusPct { get; private set; } = 60;
+        /// <summary> Knockout round names (the count is the number of rounds; default 5 = the 2026 bracket). </summary>
+        [MetaMember(125)] public string[] WorldCupRoundNames { get; private set; } = new string[]
+        {
+            "Round of 32", "Round of 16", "Quarter-final", "Semi-final", "Final",
+        };
+        /// <summary> Reward for winning each World Cup round (0 = Round of 32 … last = Final / champion). </summary>
+        [MetaMember(126)] public BracketRoundReward[] WorldCupRoundRewards { get; private set; } = new BracketRoundReward[]
+        {
+            new BracketRoundReward(coins: 150,  gems: 3,  shards: 5),
+            new BracketRoundReward(coins: 300,  gems: 6,  shards: 10),
+            new BracketRoundReward(coins: 600,  gems: 12, shards: 18),
+            new BracketRoundReward(coins: 1200, gems: 25, shards: 30),
+            new BracketRoundReward(coins: 2500, gems: 60, shards: 60),
+        };
+
+        // --- Scout Packs (open BEFORE a draft: coins + draft-edge boosts — rerolls + guaranteed elite spins) ---
+        // Free daily pack (GemCost 0) drives retention; paid tiers are the Gem sink + a real draft advantage.
+        [MetaMember(127)] public PackDef[] Packs { get; private set; } = new PackDef[]
+        {
+            //          id        name              icon  gem  coinsMin coinsMax  rerolls eliteSpins
+            new PackDef("daily",  "Daily Pack",     "🎁",   0,  80,  160,  1, 0),
+            new PackDef("bronze", "Bronze Pack",    "📦",  20, 150,  300,  2, 0),
+            new PackDef("gold",   "Gold Pack",      "🥇",  60, 400,  800,  3, 1),
+            new PackDef("wc",     "World Cup Pack", "🌍", 120, 800, 1600,  5, 2),
+        };
+
+        // --- Featured Offers (value bundles; sim-IAP, display price only) ---
+        [MetaMember(128)] public BundleDef[] Bundles { get; private set; } = new BundleDef[]
+        {
+            //          id            name                icon   price     coins  gems  shards  cosmetic       oneTime
+            new BundleDef("starter",    "Starter Bundle",   "🚀", "€2.99", 1000,  30, 10, "avatar_fox",  oneTime: true),
+            new BundleDef("wc_bundle",  "World Cup Bundle", "🌍", "€4.99", 2000,  60, 30, "avatar_goat", oneTime: true),
+            new BundleDef("gold_value", "Gold Value Pack",  "💰", "€9.99", 3000, 120, 40, "",            oneTime: false),
+        };
+
         public GlobalConfig() { }
 
         /// <summary> Coins rewarded for a login at the given streak length (day 1 = base; grows per day, capped). </summary>

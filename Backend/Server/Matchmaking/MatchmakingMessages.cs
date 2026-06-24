@@ -44,6 +44,11 @@ namespace Game.Server
         public const int LeagueAdminPlayMatchdayRequest = 10_029; // force-advance one matchday (write)
         public const int LeagueSetTransferWindowRequest  = 10_030; // open/close a league's transfer window (write)
         public const int LeagueTransferSwapRequest       = 10_031; // a manager swaps a drafted player during the window
+        public const int WcLeaderboardReport             = 10_032; // a manager reports a finished World Cup run (cast)
+        public const int WcLeaderboardGetSnapshotRequest = 10_033; // fetch the top-N World Cup leaderboard (read)
+        public const int LeagueTradeOfferRequest         = 10_034; // P2P: propose a player+cash trade to a leaguemate
+        public const int LeagueTradeRespondRequest       = 10_035; // P2P: accept/reject/cancel a pending trade offer
+        public const int LeagueAdjustCoinsMessage        = 10_036; // P2P: league grants/refunds a player's coins (cast)
     }
 
     /// <summary> A player opens a private room under <see cref="Code"/>. </summary>

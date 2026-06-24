@@ -40,5 +40,12 @@ namespace Game.Logic
         /// migration-free stand-in for the persisted Guild + Leagues frameworks.)
         /// </summary>
         public static readonly EntityKind League = EntityKind.FromValue(104);
+
+        /// <summary>
+        /// The global World Cup leaderboard: a singleton, persisted service ranking managers by their best World
+        /// Cup run (titles, then deepest round, then best-XI overall). Players report on finishing a run and fetch
+        /// a top-N snapshot for the World Cup hub's leaderboard view.
+        /// </summary>
+        public static readonly EntityKind WorldCupLeaderboard = EntityKind.FromValue(105);
     }
 }

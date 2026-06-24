@@ -1,3 +1,4 @@
+@using System.Collections.Generic
 @using System.Linq
 @using Game.Logic
 @using WebClientBase.Services
@@ -22,8 +23,37 @@
                         @onclick="OnClose">✕ CLOSE</button>
             </div>
 
+            @* ---------- FEATURED OFFERS: value bundles (sim-IAP) ---------- *@
+            @if (Global.Bundles.Length > 0)
+            {
+                <p class="t38-label text-xs text-white/55 mt-1">⭐ Featured offers</p>
+                @foreach (BundleDef b in Global.Bundles)
+                {
+                    bool owned = b.OneTime && Player.Store.Owns(b.Id);
+                    <div class="relative mt-1">
+                        <span class="t38-label text-[8px] px-2 py-0.5 rounded-full absolute -top-2 left-4 z-10" style="background:var(--t38-emerald);color:#05140d;">@(b.OneTime ? "ONE-TIME" : "VALUE")</span>
+                        <div class="t38-marquee px-4 py-3 flex items-center gap-3">
+                            <span class="text-3xl">@b.Icon</span>
+                            <div class="flex-1 min-w-0">
+                                <p class="t38-display text-base text-white">@b.Name</p>
+                                <p class="text-[10px] text-white/50 truncate">@BundleContents(b)</p>
+                            </div>
+                            @if (owned)
+                            {
+                                <span class="t38-label text-[10px] px-3 py-2 rounded-xl" style="background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.45);">OWNED</span>
+                            }
+                            else
+                            {
+                                <button class="t38-cta-amber text-sm px-4 py-2.5 rounded-xl t38-tap" data-testid="buy-bundle"
+                                        @onclick="@(() => MetaplayService.BuyBundle(b.Id))">@b.PriceLabel</button>
+                            }
+                        </div>
+                    </div>
+                }
+            }
+
             @* ---------- COIN PACKS: gems → transfer money ---------- *@
-            <p class="t38-label text-xs text-white/55 mt-1">Coin packs · transfer money</p>
+            <p class="t38-label text-xs text-white/55 mt-2">Coin packs · transfer money</p>
             @for (int i = 0; i < Global.CoinProducts.Length; i++)
             {
                 CoinProduct cp = Global.CoinProducts[i];
@@ -83,10 +113,22 @@
     [Parameter] public EventCallback OnClose { get; set; }
 
     private PlayerModel? Player => MetaplayService.PlayerModel;
+    private SharedGameConfig? Config => Player?.GameConfig;
     private GlobalConfig Global => Player!.GameConfig.Global;
     private long Gems => Player?.Wallet.Get(CurrencyType.Gems) ?? 0;
 
     private bool _needGems;
+
+    private string BundleContents(BundleDef b)
+    {
+        List<string> parts = new List<string>();
+        if (b.Coins > 0)  parts.Add($"🪙{b.Coins:N0}");
+        if (b.Gems > 0)   parts.Add($"💎{b.Gems}");
+        if (b.Shards > 0) parts.Add($"🔩{b.Shards}");
+        if (!string.IsNullOrEmpty(b.CosmeticId) && Config != null && Config.Cosmetics.TryGetValue(b.CosmeticId, out CosmeticItem? c))
+            parts.Add($"{c.Glyph} {c.Name}");
+        return string.Join(" · ", parts);
+    }
 
     protected override void OnInitialized()
     {

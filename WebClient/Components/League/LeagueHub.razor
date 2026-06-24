@@ -56,9 +56,10 @@
                         <p class="text-xs text-white/45 -mt-1">Draft your XI and take on a league of 19 CPU teams — 38 matchdays, transfers, the lot. Can you go unbeaten?</p>
                         <input @bind="_teamName" @bind:event="oninput" maxlength="22" placeholder="Your team name"
                                class="t38-input text-sm w-full py-2.5 px-3" />
+                        @RulesEditor
                         <button class="t38-cta text-lg w-full py-3 t38-tap" data-testid="start-solo"
                                 disabled="@(string.IsNullOrWhiteSpace(_teamName))"
-                                @onclick="@(() => MetaplayService.CreateSoloLeague(_teamName))">KICK OFF&nbsp; →</button>
+                                @onclick="@(() => MetaplayService.CreateSoloLeague(_teamName, _hideRatings, _maxPerClub, _capBands, _draftPin))">KICK OFF&nbsp; →</button>
                     </div>
                     <button class="text-xs text-white/45 py-1" @onclick="@(() => _mode = "create")">play with friends instead →</button>
                 }
@@ -71,9 +72,10 @@
                                class="t38-input text-sm w-full py-2.5 px-3" />
                         <input @bind="_teamName" @bind:event="oninput" maxlength="22" placeholder="Your team name"
                                class="t38-input text-sm w-full py-2.5 px-3" />
+                        @RulesEditor
                         <button class="t38-cta text-lg w-full py-3 t38-tap"
                                 disabled="@(string.IsNullOrWhiteSpace(_leagueName) || string.IsNullOrWhiteSpace(_teamName))"
-                                @onclick="@(() => MetaplayService.CreateLeague(_leagueName, _teamName))">CREATE LEAGUE</button>
+                                @onclick="@(() => MetaplayService.CreateLeague(_leagueName, _teamName, _hideRatings, _maxPerClub, _capBands, _draftPin))">CREATE LEAGUE</button>
                     </div>
                     <button class="text-xs text-white/45 py-1" @onclick="@(() => _mode = "join")">have a code? join a league →</button>
                 }
@@ -86,6 +88,10 @@
                     <p class="t38-label text-[10px] text-white/40 mt-4">share this code</p>
                     <div class="t38-display text-5xl tracking-[0.25em] my-1" style="color: var(--t38-emerald);" data-testid="league-code">@Snap.Code</div>
                     <p class="text-xs text-white/45">@Snap.Members.Count / 20 managers joined</p>
+                    @if (RulesSummary().Length > 0)
+                    {
+                        <p class="text-[10px] text-white/40 mt-1" data-testid="lobby-rules">⚖ @RulesSummary()</p>
+                    }
                 </div>
 
                 <div class="t38-card px-4 py-2">
@@ -140,6 +146,10 @@
                         @PitchRow(Position.DEF)
                         @PitchRow(Position.GK)
                     </div>
+                    @if (RulesSummary().Length > 0)
+                    {
+                        <p class="text-[10px] text-white/40 text-center mt-2" data-testid="rules-summary">⚖ @RulesSummary()</p>
+                    }
                 </div>
 
                 @* Formation: choose before your first pick. *@
@@ -196,17 +206,35 @@
                                     {
                                         SpunPlayer pl = pickables[i];
                                         string lid = pl.LegendId;
+                                        string block = RuleBlock(pl); // "" = legal; else the squad-rule reason
                                         double delay = 0.6 + System.Math.Min(i, 14) * 0.06; // players unfold after the club/year
-                                        <button class="t38-card t38-tap px-3 py-2.5 flex items-center gap-3 w-full text-left t38-reveal" data-testid="draft-candidate"
-                                                style="animation-delay:@(delay.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture))s;"
-                                                @onclick="@(() => MetaplayService.LeagueDraftPick(lid))">
-                                            <span class="w-10 h-10 rounded-lg flex items-center justify-center text-base @PosBgClass(pl.Position)" style="font-weight:800;">@pl.Ovr</span>
-                                            <div class="flex-1 min-w-0">
-                                                <div class="text-white truncate" style="font-weight:700;">@pl.Name</div>
-                                                <div class="text-[11px] text-white/40 truncate">@pl.Nation</div>
+                                        string delayStyle = $"animation-delay:{delay.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}s;";
+                                        @if (block.Length == 0)
+                                        {
+                                            <button class="t38-card t38-tap px-3 py-2.5 flex items-center gap-3 w-full text-left t38-reveal" data-testid="draft-candidate"
+                                                    style="@delayStyle"
+                                                    @onclick="@(() => MetaplayService.LeagueDraftPick(lid))">
+                                                <span class="w-10 h-10 rounded-lg flex items-center justify-center text-base @PosBgClass(pl.Position)" style="font-weight:800;">@OvrText(pl.Ovr)</span>
+                                                <div class="flex-1 min-w-0">
+                                                    <div class="text-white truncate" style="font-weight:700;">@pl.Name</div>
+                                                    <div class="text-[11px] text-white/40 truncate">@pl.Nation</div>
+                                                </div>
+                                                <span class="text-[10px] px-2 py-1 rounded @PosBgClass(pl.Position)" style="font-weight:700;">@PosShort(pl.Position)</span>
+                                            </button>
+                                        }
+                                        else
+                                        {
+                                            @* Breaks a squad rule (same club / OVR cap) — shown greyed with the reason rather than hidden. *@
+                                            <div class="t38-card px-3 py-2.5 flex items-center gap-3 w-full text-left t38-reveal" data-testid="draft-blocked"
+                                                 style="@(delayStyle)opacity:0.45;" title="@block">
+                                                <span class="w-10 h-10 rounded-lg flex items-center justify-center text-base @PosBgClass(pl.Position)" style="font-weight:800;">@OvrText(pl.Ovr)</span>
+                                                <div class="flex-1 min-w-0">
+                                                    <div class="text-white/70 truncate" style="font-weight:700;">@pl.Name</div>
+                                                    <div class="text-[10px] truncate" style="color:#ffb0ac;">🚫 @block</div>
+                                                </div>
+                                                <span class="text-[10px] px-2 py-1 rounded @PosBgClass(pl.Position)" style="font-weight:700;">@PosShort(pl.Position)</span>
                                             </div>
-                                            <span class="text-[10px] px-2 py-1 rounded @PosBgClass(pl.Position)" style="font-weight:700;">@PosShort(pl.Position)</span>
-                                        </button>
+                                        }
                                     }
                                 </div>
                             }
@@ -316,6 +344,41 @@
                     }
                 </div>
 
+                @* ---------- Results history: every played fixture + scorers, visible to all members ---------- *@
+                @if (Snap.SeasonResults.Count > 0)
+                {
+                    <button class="t38-card t38-tap px-4 py-3 w-full flex items-center justify-between" data-testid="results-history-toggle"
+                            @onclick="@(() => _showHistory = !_showHistory)">
+                        <span class="t38-label text-xs text-white/55">📋 Results &amp; scorers</span>
+                        <span class="text-white/40">@(_showHistory ? "▲" : "▼")</span>
+                    </button>
+                    @if (_showHistory)
+                    {
+                        <div class="t38-card px-3 py-3 flex flex-col gap-3" style="max-height: 26rem; overflow-y:auto;" data-testid="results-history">
+                            @foreach (IGrouping<int, LeagueResultLine> grp in Snap.SeasonResults.GroupBy(r => r.Matchday).OrderByDescending(g => g.Key))
+                            {
+                                <div>
+                                    <div class="t38-label text-[10px] text-white/40 mb-1">Matchday @grp.Key</div>
+                                    @foreach (LeagueResultLine r in grp)
+                                    {
+                                        <div class="py-1 t38-row">
+                                            <div class="text-[12px] text-white/85 flex items-center gap-2">
+                                                <span class="truncate flex-1 text-right">@r.HomeName</span>
+                                                <span style="font-weight:800;">@r.HomeGoals–@r.AwayGoals</span>
+                                                <span class="truncate flex-1">@r.AwayName</span>
+                                            </div>
+                                            @if (r.Goals != null && r.Goals.Count > 0)
+                                            {
+                                                <div class="text-[10px] text-white/40 mt-0.5 text-center">⚽ @ScorerLine(r)</div>
+                                            }
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    }
+                }
+
                 @* ---------- The meta hub: big tiles with claim badges ---------- *@
                 @if (Snap.MyIndex >= 0)
                 {
@@ -326,12 +389,15 @@
                             <span class="text-3xl">🔁</span>
                             <div class="flex-1">
                                 <div class="t38-display text-lg text-white">TRANSFER MARKET</div>
-                                <div class="text-[11px] mt-0.5 @(Snap.TransferWindowOpen ? "" : "text-white/40")" style="@(Snap.TransferWindowOpen ? "color:var(--t38-emerald);font-weight:700;" : "")">
-                                    @(Snap.TransferWindowOpen ? "● WINDOW OPEN — sign a star" : "window closed")
+                                <div class="text-[11px] mt-0.5" style="@(IncomingTrades > 0 ? "color:var(--t38-amber);font-weight:700;" : Snap.TransferWindowOpen ? "color:var(--t38-emerald);font-weight:700;" : "color:rgba(255,255,255,0.4);")">
+                                    @(IncomingTrades > 0
+                                        ? $"🤝 {IncomingTrades} trade offer{(IncomingTrades == 1 ? "" : "s")} — tap to respond"
+                                        : Snap.TransferWindowOpen ? "● WINDOW OPEN — sign or trade" : "window closed · trades open")
                                 </div>
                             </div>
                             <span class="t38-label text-[9px] px-2 py-1 rounded-full" style="background:rgba(233,185,73,0.16);color:var(--t38-amber);">⭐ MARQUEE</span>
-                            @if (Snap.TransferWindowOpen) { <span class="t38-badge t38-badge-dot"></span> }
+                            @if (IncomingTrades > 0) { <span class="t38-badge">@IncomingTrades</span> }
+                            else if (Snap.TransferWindowOpen) { <span class="t38-badge t38-badge-dot"></span> }
                         </button>
                     }
 
@@ -350,6 +416,10 @@
                         <button class="t38-tile-xl t38-tap relative flex flex-col items-center justify-center py-4" data-testid="meta-inbox" @onclick="@(() => _showInbox = true)">
                             <span class="text-2xl">📬</span><span class="t38-label text-[10px] text-white/70 mt-1.5">Inbox</span>
                             @if (UnreadMail > 0) { <span class="t38-badge">@UnreadMail</span> }
+                        </button>
+                        <button class="t38-tile-xl t38-tap relative flex flex-col items-center justify-center py-4" data-testid="meta-profile" @onclick="@(() => _showProfile = true)">
+                            <span class="text-2xl">👤</span><span class="t38-label text-[10px] text-white/70 mt-1.5">Profile</span>
+                            @if (ClaimableObjectives > 0) { <span class="t38-badge">@ClaimableObjectives</span> }
                         </button>
                     </div>
                 }
@@ -445,12 +515,12 @@
         </div>
 
         <div class="flex flex-col gap-1 mt-5" style="min-height: 7rem;">
-            @foreach ((int minute, bool mine) in _cineGoals)
+            @foreach ((int minute, bool mine, string scorer, string assist) in _cineGoals)
             {
                 if (minute <= _cineMinute)
                 {
                     <span class="text-sm t38-reveal" style="@(mine ? "color:var(--t38-emerald);font-weight:700;" : "color:rgba(255,255,255,0.6);")">
-                        ⚽ @(minute)′ GOAL — @(mine ? myName : _cineResult.OpponentName)
+                        ⚽ @(minute)′ @(string.IsNullOrEmpty(scorer) ? (mine ? myName : _cineResult.OpponentName) : scorer)@(string.IsNullOrEmpty(assist) ? "" : $" 🅰 {assist}")
                     </span>
                 }
             }
@@ -459,6 +529,10 @@
         @if (fullTime)
         {
             <div class="t38-display text-lg text-white mt-1">FULL TIME</div>
+            @if (!string.IsNullOrEmpty(_cineResult.Report))
+            {
+                <p class="text-[11px] text-white/65 mt-1" style="font-style:italic;max-width:22rem;">@_cineResult.Report</p>
+            }
             @if (MetaplayService.LastMatchReward is { } reward)
             {
                 <div class="flex items-center justify-center gap-3 mt-2 text-sm" style="font-weight:700;">
@@ -494,6 +568,10 @@
 {
     <InboxHub OnClose="@(() => _showInbox = false)" />
 }
+@if (_showProfile)
+{
+    <ManagerProfileHub OnClose="@(() => _showProfile = false)" />
+}
 
 @code {
     [Parameter] public EventCallback OnClose { get; set; }
@@ -505,7 +583,24 @@
     private string _joinCode = "";
     private string _teamName = "";
     private string _mode = "create";
+    private bool _hideRatings;                    // hard mode (hide ratings)
+    private int _maxPerClub = 1;                  // House rule: max players per club (0 = no limit)
     private Position? _pickPos;
+
+    // House rule: fully custom OVR-cap bands. Each rule is "max N players rated R+"; up to MaxCapRules of them.
+    // Editable add/remove rows (no fixed presets) — serialized on demand to the "R:N,R:N" string the server +
+    // LeagueDefinition.ParseOvrCaps already understand (highest rating first), see _capBands below.
+    private const int MaxCapRules = 5;
+    private sealed class CapRule { public int Ovr; public int Max; public CapRule(int ovr, int max) { Ovr = ovr; Max = max; } }
+    private readonly List<CapRule> _capRules =
+        LeagueDefinition.ParseOvrCaps("90:2,80:3,75:4").Select(c => new CapRule(c.Threshold, c.Max)).ToList();
+    private string _capBands => string.Join(",", _capRules.OrderByDescending(r => r.Ovr).Select(r => $"{r.Ovr}:{r.Max}"));
+
+    // Pin-draft House Rule — filters the spin pool by era and/or elite clubs (serialised like CapBands).
+    private string _pinEra = "";   // "" = any era; else an Era enum name, e.g. "E2010s"
+    private bool   _pinElite;
+    private string _draftPin => string.Join(",",
+        new[] { string.IsNullOrEmpty(_pinEra) ? "" : $"era:{_pinEra}", _pinElite ? "elite:1" : "" }.Where(s => s.Length > 0));
 
     private PlayerModel? Player => MetaplayService.PlayerModel;
     private SharedGameConfig? Config => Player?.GameConfig;
@@ -619,10 +714,17 @@
     private bool _showPass;
     private bool _showQuests;
     private bool _showInbox;
+    private bool _showProfile;
     private bool _showResults;
+    private bool _showHistory;
     private bool _showTable = true;
 
     private int UnreadMail => Player?.MailInbox.Count(m => !m.IsRead) ?? 0;
+
+    // Objectives ready to claim (drives the 👤 Profile tile badge).
+    private int ClaimableObjectives => Player != null ? Objectives.ClaimableCount(Player) : 0;
+    // Incoming P2P trade offers awaiting my response (drives the Transfer Market tile badge).
+    private int IncomingTrades => Snap?.MyTradeOffers.Count(o => o.Incoming) ?? 0;
 
     // ---- Matchday cinematic (feedback for PLAY MATCHDAY NOW — the sim "plays out" over ~10s) ----
     private const int CineFullTimeMinute = 93;
@@ -631,7 +733,7 @@
     private bool _cineActive;
     private int  _cineMinute;
     private LeaguePlayResult? _cineResult;
-    private readonly List<(int Minute, bool Mine)> _cineGoals = new List<(int, bool)>();
+    private readonly List<(int Minute, bool Mine, string Scorer, string Assist)> _cineGoals = new List<(int, bool, string, string)>();
     private System.Timers.Timer? _cineTimer;
 
     private void PlayMatchday()
@@ -645,7 +747,7 @@
     private int CineGoalsShown(bool mine)
     {
         int count = 0;
-        foreach ((int minute, bool isMine) in _cineGoals)
+        foreach ((int minute, bool isMine, _, _) in _cineGoals)
             if (isMine == mine && minute <= _cineMinute)
                 count++;
         return count;
@@ -656,9 +758,18 @@
         _cineWaiting = false;
         _cineResult = result;
         _cineGoals.Clear();
-        // Deterministic pseudo-random goal minutes (cosmetic — the server only reports the scoreline).
-        for (int i = 0; i < result.MyGoals; i++)  _cineGoals.Add((CineMinute(matchday, i, 0), true));
-        for (int i = 0; i < result.OppGoals; i++) _cineGoals.Add((CineMinute(matchday, i, 1), false));
+        if (result.Goals != null && result.Goals.Count > 0)
+        {
+            // Real server-attributed goals: minute + named scorer/assister, mapped to my/opp perspective.
+            foreach (MatchGoalDetail g in result.Goals)
+                _cineGoals.Add((g.Minute, g.HomeSide == result.Home, g.Scorer, g.Assist));
+        }
+        else
+        {
+            // Fallback for results without goal detail: deterministic pseudo-random minutes, unnamed.
+            for (int i = 0; i < result.MyGoals; i++)  _cineGoals.Add((CineMinute(matchday, i, 0), true, "", ""));
+            for (int i = 0; i < result.OppGoals; i++) _cineGoals.Add((CineMinute(matchday, i, 1), false, "", ""));
+        }
         _cineGoals.Sort((a, b) => a.Minute.CompareTo(b.Minute));
         _cineMinute = 0;
         _cineActive = true;
@@ -711,6 +822,131 @@
     private long EliteSpinCost => Def.EliteSpinGemCost;
     private bool CanAffordEliteSpin => (Player?.Wallet.Get(CurrencyType.Gems) ?? 0) >= EliteSpinCost;
 
+    /// <summary> OVR for display — masked as "?" in a hard-mode (hidden-ratings) league. </summary>
+    private string OvrText(int ovr) => (Snap?.HideRatings ?? false) ? "?" : ovr.ToString();
+
+    private string ToggleStyle(bool on) => on
+        ? "background:rgba(52,211,154,0.16);border:1px solid var(--t38-emerald);color:var(--t38-emerald);"
+        : "background:rgba(255,255,255,0.05);border:1px solid var(--t38-line);color:rgba(255,255,255,0.6);";
+
+    // ---- Custom squad-cap rules (the "House rules → Squad caps" editor) ----
+    private void AddRule()
+    {
+        // Seed the new rule a notch below the current lowest band (or a sensible first band) so it reads in order.
+        int ovr = _capRules.Count > 0 ? System.Math.Clamp(_capRules.Min(r => r.Ovr) - 5, 50, 99) : 85;
+        _capRules.Add(new CapRule(ovr, 3));
+    }
+    private void RemoveRule(int idx) { if (idx >= 0 && idx < _capRules.Count) _capRules.RemoveAt(idx); }
+    private void ToggleCaps()
+    {
+        // Off → seed the classic tester bands; On → clear to no caps.
+        if (_capRules.Count > 0)
+            _capRules.Clear();
+        else
+            _capRules.AddRange(new[] { new CapRule(90, 2), new CapRule(80, 3), new CapRule(75, 4) });
+    }
+    private void SetOvr(int idx, string? v) { if (idx >= 0 && idx < _capRules.Count && int.TryParse(v, out int n)) _capRules[idx].Ovr = System.Math.Clamp(n, 50, 99); }
+    private void SetMax(int idx, string? v) { if (idx >= 0 && idx < _capRules.Count && int.TryParse(v, out int n)) _capRules[idx].Max = System.Math.Clamp(n, 1, 11); }
+
+    // Shared "House rules" editor — used on BOTH the multiplayer create card and the single-player card.
+    private RenderFragment RulesEditor => @<div class="t38-card px-3 py-2.5 flex flex-col gap-2" style="background:rgba(255,255,255,0.02);">
+        <span class="t38-label text-[10px] text-white/45">House rules — pick your game mode</span>
+        <label class="flex items-center justify-between gap-2 text-xs text-white/70">
+            <span>🚫 Players per club</span>
+            <select class="t38-input text-xs py-1.5 px-2" style="max-width:12rem;" @bind="_maxPerClub" data-testid="rule-club-select">
+                <option value="0">No limit</option>
+                <option value="1">Max 1 — one per club</option>
+                <option value="2">Max 2 per club</option>
+                <option value="3">Max 3 per club</option>
+            </select>
+        </label>
+        <div class="flex flex-col gap-1.5" data-testid="rule-caps">
+            <div class="flex items-center justify-between">
+                <span class="text-xs text-white/70">🧮 Squad caps</span>
+                <button class="text-[10px] px-2.5 py-1 rounded-lg t38-tap" style="@ToggleStyle(_capRules.Count > 0)"
+                        data-testid="rule-caps-toggle" @onclick="ToggleCaps">@(_capRules.Count > 0 ? "ON" : "OFF")</button>
+            </div>
+            <p class="text-[10px] text-white/40 -mt-0.5">Limit your stars. Each rule caps how many players you can draft at or above a rating — stack a few for a tight budget XI.</p>
+            @for (int i = 0; i < _capRules.Count; i++)
+            {
+                int idx = i;
+                CapRule rule = _capRules[idx];
+                <div class="flex items-center gap-1.5 text-xs text-white/75" data-testid="cap-rule">
+                    <span class="text-white/40">max</span>
+                    <input type="number" min="1" max="11" inputmode="numeric" value="@rule.Max"
+                           class="t38-input text-xs py-1 px-1 text-center" style="width:2.8rem;"
+                           @onchange="@(e => SetMax(idx, e.Value?.ToString()))" />
+                    <span class="text-white/40">rated</span>
+                    <input type="number" min="50" max="99" inputmode="numeric" value="@rule.Ovr"
+                           class="t38-input text-xs py-1 px-1 text-center" style="width:3.4rem;"
+                           @onchange="@(e => SetOvr(idx, e.Value?.ToString()))" />
+                    <span class="text-white/40">+</span>
+                    <button class="ml-auto text-white/35 hover:text-white/70 px-2 py-1 t38-tap" title="Remove rule"
+                            data-testid="cap-rule-remove" @onclick="@(() => RemoveRule(idx))">✕</button>
+                </div>
+            }
+            @if (_capRules.Count == 0)
+            {
+                <p class="text-[10px] text-white/30">No caps — draft whoever you like.</p>
+            }
+            @if (_capRules.Count < MaxCapRules)
+            {
+                <button class="text-[11px] py-1.5 rounded-lg t38-tap" style="background:rgba(255,255,255,0.05);color:rgba(255,255,255,0.7);"
+                        data-testid="add-cap-rule" @onclick="AddRule">+ Add cap rule</button>
+            }
+        </div>
+        <label class="flex items-center justify-between gap-2 text-xs text-white/70">
+            <span>📅 Pin draft era</span>
+            <select class="t38-input text-xs py-1.5 px-2" style="max-width:12rem;" @bind="_pinEra" data-testid="rule-era-select">
+                <option value="">Any era</option>
+                <option value="E2020s">2020s only</option>
+                <option value="E2010s">2010s only</option>
+                <option value="E2000s">2000s only</option>
+                <option value="E1990s">90s classics</option>
+            </select>
+        </label>
+        <button class="text-xs px-3 py-2 rounded-lg t38-tap flex items-center justify-between" data-testid="rule-elite-toggle"
+                style="@ToggleStyle(_pinElite)" @onclick="@(() => _pinElite = !_pinElite)">
+            <span>⭐ Elite clubs only</span><span style="font-weight:800;">@(_pinElite ? "ON" : "OFF")</span>
+        </button>
+        <button class="text-xs px-3 py-2 rounded-lg t38-tap flex items-center justify-between" data-testid="hardmode-toggle"
+                style="@ToggleStyle(_hideRatings)" @onclick="@(() => _hideRatings = !_hideRatings)">
+            <span>🙈 Hard mode — hide ratings</span><span style="font-weight:800;">@(_hideRatings ? "ON" : "OFF")</span>
+        </button>
+    </div>;
+
+    /// <summary> "" if the spun player is legal to draft, else the squad-rule reason (no-same-club / OVR caps). </summary>
+    private string RuleBlock(SpunPlayer pl)
+    {
+        if (Snap == null || Config == null) return "";
+        LegendPlayer? cand = Lookup(pl.LegendId);
+        if (cand == null) return "";
+        Dictionary<int, string> roster = new Dictionary<int, string>();
+        foreach ((int slot, string id) in Snap.MyRoster)
+            roster[slot] = id;
+        return LeagueDraftEngine.SquadRuleError(roster, lid => Lookup(lid.Value)!, Snap.MaxPerClub, LeagueDefinition.ParseOvrCaps(Snap.CapBands), cand);
+    }
+
+    /// <summary> Human-readable summary of the active squad-building rules (shown under the draft XI). </summary>
+    private string RulesSummary()
+    {
+        if (Config == null) return "";
+        List<string> parts = new List<string>();
+        int mpc = Snap?.MaxPerClub ?? 0;
+        if (mpc == 1) parts.Add("1 per club");
+        else if (mpc > 1) parts.Add($"max {mpc}/club");
+        List<(int Threshold, int Max)> caps = LeagueDefinition.ParseOvrCaps(Snap?.CapBands ?? "");
+        if (caps.Count > 0) parts.Add("caps " + string.Join("/", caps.Select(c => $"{c.Max}×{c.Threshold}+")));
+        string pin = LeaguePin.Describe(Snap?.DraftPin ?? "");
+        if (pin.Length > 0) parts.Add("📌 " + pin);
+        if (Snap?.HideRatings ?? false) parts.Add("🙈 ratings hidden");
+        return string.Join(" · ", parts);
+    }
+
+    /// <summary> "Scorer 23', Scorer 45'" line for a result in the history view. </summary>
+    private string ScorerLine(LeagueResultLine r) =>
+        string.Join(", ", r.Goals.Select(g => $"{(string.IsNullOrEmpty(g.Scorer) ? "?" : ShortName(g.Scorer))} {g.Minute}'"));
+
     /// <summary> Completed-but-unclaimed quests across both scopes (daily gated on the stored day being current). </summary>
     private int ClaimableQuests
     {
@@ -758,7 +994,7 @@
             if (legend != null)
             {
                 <div class="rounded-lg px-1 py-1 flex flex-col items-center" style="width:4.2rem;background:rgba(255,255,255,0.04);border:1px solid var(--t38-line);">
-                    <span class="text-sm @PosTextClass(pos)" style="font-weight:800;">@legend.Ovr</span>
+                    <span class="text-sm @PosTextClass(pos)" style="font-weight:800;">@OvrText(legend.Ovr)</span>
                     <span class="text-[9px] text-white/85 truncate w-full text-center">@ShortName(legend.Name)</span>
                 </div>
             }

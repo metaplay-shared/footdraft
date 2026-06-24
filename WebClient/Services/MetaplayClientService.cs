@@ -212,6 +212,25 @@ public class MetaplayClientService : MetaplayClientServiceBase<PlayerModel>,
     /// <summary> Play the current bracket round. </summary>
     public void PlayBracketRound() => ExecuteAction(new PlayerPlayBracketRound());
 
+    // ----- Draft Cup (FUT-Draft-style paid mode) -----
+    public void EnterDraftCup(bool premium = false) => ExecuteAction(new PlayerEnterDraftCup(premium));
+    public void PlayDraftCupRound() => ExecuteAction(new PlayerPlayDraftCupRound());
+
+    // ----- World Cup 2026 (draft a WC squad from real national pools → knockout vs real nations) -----
+    public void EnterWorldCup(bool premium = false) => ExecuteAction(new PlayerEnterWorldCup(premium));
+    public void PlayWorldCupRound() => ExecuteAction(new PlayerPlayWorldCupRound());
+    /// <summary> Fetch + cache the global World Cup leaderboard (the server replies via PlayerSetWcLeaderboard). </summary>
+    public void RefreshWorldCupLeaderboard() => ExecuteAction(new PlayerRefreshWorldCupLeaderboard());
+
+    // ----- Scout Packs (FUT-style pack-opening monetisation) -----
+    public void OpenPack(string packId) => ExecuteAction(new PlayerOpenPack(packId));
+
+    // ----- Objectives (claimable career reward track) -----
+    public void ClaimObjective(string objectiveId) => ExecuteAction(new PlayerClaimObjective(objectiveId));
+
+    // ----- Featured Offers (value bundles; sim-IAP) -----
+    public void BuyBundle(string bundleId) => ExecuteAction(new PlayerBuyBundle(bundleId));
+
     /// <summary> Buy a cosmetic with Gems. </summary>
     public void BuyCosmetic(string id) => ExecuteAction(new PlayerBuyCosmetic(id));
 
@@ -235,17 +254,17 @@ public class MetaplayClientService : MetaplayClientServiceBase<PlayerModel>,
     // ----- Season league (P4) -----
 
     /// <summary> Create a private league with a freshly-generated invite code (shown once the snapshot returns). </summary>
-    public void CreateLeague(string leagueName, string teamName)
+    public void CreateLeague(string leagueName, string teamName, bool hideRatings = false, int maxPerClub = 1, string capBands = "90:2,80:3,75:4", string draftPin = "")
     {
         string code = GenerateFriendlyCode();
-        ExecuteAction(new PlayerCreateLeague((leagueName ?? "").Trim(), code, (teamName ?? "").Trim()));
+        ExecuteAction(new PlayerCreateLeague((leagueName ?? "").Trim(), code, (teamName ?? "").Trim(), hideRatings, maxPerClub, capBands, draftPin));
     }
 
     /// <summary> Create a single-player season: no lobby, straight into the draft vs a league of CPU teams. </summary>
-    public void CreateSoloLeague(string teamName)
+    public void CreateSoloLeague(string teamName, bool hideRatings = false, int maxPerClub = 1, string capBands = "90:2,80:3,75:4", string draftPin = "")
     {
         string code = GenerateFriendlyCode();
-        ExecuteAction(new PlayerCreateSoloLeague(code, (teamName ?? "").Trim()));
+        ExecuteAction(new PlayerCreateSoloLeague(code, (teamName ?? "").Trim(), hideRatings, maxPerClub, capBands, draftPin));
     }
 
     /// <summary> Join a league by invite code. </summary>
@@ -296,6 +315,10 @@ public class MetaplayClientService : MetaplayClientServiceBase<PlayerModel>,
     /// charged from the wallet — OVR-scaled Coins, or Gems when <paramref name="payWithGems"/> (marquee signing). </summary>
     public void LeagueTransferSwap(string dropLegendId, string addLegendId, bool payWithGems = false) => ExecuteAction(new PlayerLeagueTransferSwap(dropLegendId, addLegendId, payWithGems));
 
+    // ----- P2P trades (player + cash, between two managers) -----
+    public void LeagueProposeTrade(int toIndex, string giveLegendId, string getLegendId, int coins) => ExecuteAction(new PlayerLeagueProposeTrade(toIndex, giveLegendId, getLegendId, coins));
+    public void LeagueRespondTrade(int offerId, bool accept) => ExecuteAction(new PlayerLeagueRespondTrade(offerId, accept));
+
     /// <summary> Claim a completed quest's reward (daily or season scope). </summary>
     public void ClaimQuest(string questId) => ExecuteAction(new PlayerClaimQuest(questId));
 
@@ -334,6 +357,10 @@ public class MetaplayClientService : MetaplayClientServiceBase<PlayerModel>,
 
     public void ClearMatchReward() { LastMatchReward = null; NotifyStateChanged(); }
     public void ClearLevelUp() { PendingLevelUp = null; NotifyStateChanged(); }
+
+    /// <summary> The daily-login reward just granted on session start (welcome-back popup), or null. </summary>
+    public DailyStreakInfo? PendingStreakReward { get; private set; }
+    public void ClearStreakReward() { PendingStreakReward = null; NotifyStateChanged(); }
 
     /// <summary>
     /// Close the connection.
@@ -395,8 +422,17 @@ public class MetaplayClientService : MetaplayClientServiceBase<PlayerModel>,
 
     void IPlayerModelClientListener.CupMilestoneClaimed(int claimedCount) => NotifyStateChanged();
 
+    void IPlayerModelClientListener.DailyStreakClaimed(int streak, long coins)
+    {
+        PendingStreakReward = new DailyStreakInfo(streak, coins);
+        NotifyStateChanged();
+    }
+
     #endregion
 }
 
 /// <summary> Rewards granted at the end of a match, surfaced to the post-match popup. </summary>
 public record MatchRewardInfo(bool Won, int Coins, int Xp, int Shards, int CupTokens);
+
+/// <summary> The daily-login streak reward granted on session start, surfaced to the welcome-back popup. </summary>
+public record DailyStreakInfo(int Streak, long Coins);

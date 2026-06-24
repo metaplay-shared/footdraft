@@ -1,5 +1,6 @@
 // This file is part of Metaplay SDK which is released under the Metaplay SDK License.
 
+using System.Collections.Generic;
 using Metaplay.Core;
 using Metaplay.Core.Model;
 using Metaplay.Core.Player;
@@ -98,6 +99,26 @@ namespace Game.Logic
         public const int PlayerRerollQuest        = 5063;
         // FOOTDRAFT shop: exchange Gems for a Coins pack.
         public const int PlayerBuyCoinPack        = 5064;
+        // FOOTDRAFT Draft Cup (FUT-Draft-style paid mode): enter (pay + reset draft) + play a knockout round.
+        public const int PlayerEnterDraftCup      = 5065;
+        public const int PlayerPlayDraftCupRound  = 5066;
+        // FOOTDRAFT World Cup 2026 (draft a one-off XI from real WC squads → knockout vs real nations).
+        public const int PlayerEnterWorldCup      = 5067;
+        public const int PlayerPlayWorldCupRound  = 5068;
+        // FOOTDRAFT Scout Packs (FUT-style pack opening: currency + cosmetic/star pulls).
+        public const int PlayerOpenPack           = 5069;
+        // FOOTDRAFT Objectives (claimable career-milestone reward track).
+        public const int PlayerClaimObjective     = 5070;
+        // FOOTDRAFT Featured Offers (value bundles; sim-IAP).
+        public const int PlayerBuyBundle          = 5071;
+        // FOOTDRAFT World Cup leaderboard (refresh the cached board; server-set cache).
+        public const int PlayerRefreshWorldCupLeaderboard = 5072;
+        public const int PlayerSetWcLeaderboard           = 5073;
+        // FOOTDRAFT P2P trades (propose a player+cash trade; respond/cancel).
+        public const int PlayerLeagueProposeTrade = 5074;
+        public const int PlayerLeagueRespondTrade = 5075;
+        // FOOTDRAFT Scout-Pack draft boosts: server-issued elite-spin consumption.
+        public const int PlayerConsumeEliteSpin   = 5076;
     }
 
     /// <summary> A club name: 2–20 characters, letters/digits/space, trimmed. </summary>
@@ -161,6 +182,17 @@ namespace Game.Logic
         public static readonly MetaActionResult UnknownProduct      = new MetaActionResult(nameof(UnknownProduct));
         public static readonly MetaActionResult BracketInProgress   = new MetaActionResult(nameof(BracketInProgress));
         public static readonly MetaActionResult BracketNotActive    = new MetaActionResult(nameof(BracketNotActive));
+        public static readonly MetaActionResult DraftCupBusy        = new MetaActionResult(nameof(DraftCupBusy));
+        public static readonly MetaActionResult DraftCupNotActive   = new MetaActionResult(nameof(DraftCupNotActive));
+        public static readonly MetaActionResult WorldCupBusy        = new MetaActionResult(nameof(WorldCupBusy));
+        public static readonly MetaActionResult WorldCupNotActive   = new MetaActionResult(nameof(WorldCupNotActive));
+        public static readonly MetaActionResult WorldCupUnavailable = new MetaActionResult(nameof(WorldCupUnavailable));
+        public static readonly MetaActionResult PackAlreadyClaimedToday = new MetaActionResult(nameof(PackAlreadyClaimedToday));
+        public static readonly MetaActionResult UnknownObjective        = new MetaActionResult(nameof(UnknownObjective));
+        public static readonly MetaActionResult ObjectiveNotComplete    = new MetaActionResult(nameof(ObjectiveNotComplete));
+        public static readonly MetaActionResult ObjectiveAlreadyClaimed = new MetaActionResult(nameof(ObjectiveAlreadyClaimed));
+        public static readonly MetaActionResult BundleAlreadyOwned      = new MetaActionResult(nameof(BundleAlreadyOwned));
+        public static readonly MetaActionResult DraftNotComplete    = new MetaActionResult(nameof(DraftNotComplete));
         public static readonly MetaActionResult UnknownCosmetic     = new MetaActionResult(nameof(UnknownCosmetic));
         public static readonly MetaActionResult CosmeticNotOwned    = new MetaActionResult(nameof(CosmeticNotOwned));
         public static readonly MetaActionResult CosmeticAlreadyOwned = new MetaActionResult(nameof(CosmeticAlreadyOwned));
@@ -907,8 +939,13 @@ namespace Game.Logic
                     }
                     if (round > player.Bracket.BestRoundReached)
                         player.Bracket.BestRoundReached = round;
+                    if (round > player.Honours.BracketBestRound)
+                        player.Honours.BracketBestRound = round;
                     if (round + 1 >= BracketCup.RoundsTotal)
+                    {
                         player.Bracket.State = BracketState.Champion;
+                        player.Honours.BracketTitles++;
+                    }
                     else
                         player.Bracket.RoundIndex = round + 1;
                 }
@@ -917,6 +954,454 @@ namespace Game.Logic
                     player.Bracket.State = BracketState.Eliminated;
                 }
             }
+            return MetaActionResult.Success;
+        }
+    }
+
+    /// <summary>
+    /// Enter the Draft Cup: pay the entry fee (Coins standard / Gems premium), reset the draft and begin
+    /// drafting a one-off XI. Premium boosts the reward ladder. One run at a time.
+    /// </summary>
+    [ModelAction(ActionCodes.PlayerEnterDraftCup)]
+    public class PlayerEnterDraftCup : PlayerAction
+    {
+        public bool Premium { get; private set; }
+
+        PlayerEnterDraftCup() { }
+        public PlayerEnterDraftCup(bool premium = false) { Premium = premium; }
+
+        public override MetaActionResult Execute(PlayerModel player, bool commit)
+        {
+            DraftCupRun cup = player.DraftCup;
+            if (cup.State == DraftCupState.Drafting || cup.State == DraftCupState.Active)
+                return PlayerActionResults.DraftCupBusy;
+
+            GlobalConfig global = player.GameConfig.Global;
+            CurrencyType currency = Premium ? CurrencyType.Gems : CurrencyType.Coins;
+            long cost = Premium ? global.DraftCupEntryGems : global.DraftCupEntryCoins;
+            if (!player.Wallet.CanAfford(currency, cost))
+                return PlayerActionResults.NotEnoughCurrency;
+
+            if (commit)
+            {
+                player.Wallet.TrySpend(currency, cost);
+                player.Draft.Reset();
+                cup.State            = DraftCupState.Drafting;
+                cup.RoundIndex       = 0;
+                cup.BestRoundReached = -1;
+                cup.Premium          = Premium;
+                cup.RunCount++;
+                cup.LastMyGoals      = 0;
+                cup.LastOppGoals     = 0;
+                cup.LastScorers      = "";
+                player.Honours.DraftCupRuns++;
+            }
+            return MetaActionResult.Success;
+        }
+    }
+
+    /// <summary>
+    /// Play the current Draft Cup round: resolves the drafted XI vs an escalating CPU side via the deterministic
+    /// match sim, grants the (premium-boosted) round reward and advances / crowns champion on a win, or eliminates
+    /// on a loss. The first call once the XI is complete starts the knockout (Drafting → Active).
+    /// </summary>
+    [ModelAction(ActionCodes.PlayerPlayDraftCupRound)]
+    public class PlayerPlayDraftCupRound : PlayerAction
+    {
+        public PlayerPlayDraftCupRound() { }
+
+        public override MetaActionResult Execute(PlayerModel player, bool commit)
+        {
+            DraftCupRun cup = player.DraftCup;
+            SharedGameConfig config = player.GameConfig;
+            GlobalConfig global = config.Global;
+
+            bool draftComplete = player.Draft.HasFormation
+                && config.Formations.TryGetValue(player.Draft.Formation, out FormationInfo formation)
+                && player.Draft.IsComplete(formation);
+
+            if (cup.State == DraftCupState.Drafting)
+            {
+                if (!draftComplete)
+                    return PlayerActionResults.DraftNotComplete;
+            }
+            else if (cup.State != DraftCupState.Active)
+            {
+                return PlayerActionResults.DraftCupNotActive;
+            }
+
+            if (commit)
+            {
+                if (cup.State == DraftCupState.Drafting)
+                {
+                    cup.State      = DraftCupState.Active;
+                    cup.RoundIndex = 0;
+                    player.RecordDraftedXiForPlay(); // scout the XI into My Club + track best-XI overall
+                }
+
+                int round = cup.RoundIndex;
+                LineRatings you = player.ResolveDraftRatings();
+                LineRatings opp = DraftCup.OpponentLines(round, global);
+                ulong seed = DraftCup.SeedFor(cup.RunCount, round);
+                MatchResult result = MatchSim.Resolve(you, opp, seed);
+                bool win = DraftCup.IsWin(result, you, opp);
+
+                cup.LastMyGoals  = result.HomeGoals;
+                cup.LastOppGoals = result.AwayGoals;
+                cup.LastScorers  = DraftCup.ScorersLine(result, MyDraftSquad(player), seed);
+                bool dcChampion  = win && (round + 1 >= DraftCup.RoundsTotal);
+                cup.LastReport   = MatchReport.Knockout($"a {global.DraftCupOpponentBaseOvr + round * global.DraftCupOpponentOvrPerRound}-rated side",
+                                       result.HomeGoals, result.AwayGoals, cup.LastScorers, DraftCup.RoundName(round), win, dcChampion, seed);
+
+                if (win)
+                {
+                    if (round >= 0 && round < global.DraftCupRoundRewards.Length)
+                    {
+                        BracketRoundReward reward = global.DraftCupRoundRewards[round];
+                        int pct = cup.Premium ? 100 + global.DraftCupPremiumBonusPct : 100;
+                        player.Wallet.Earn(CurrencyType.Coins,  (long)reward.Coins  * pct / 100);
+                        player.Wallet.Earn(CurrencyType.Gems,   (long)reward.Gems   * pct / 100);
+                        player.Wallet.Earn(CurrencyType.Shards, (long)reward.Shards * pct / 100);
+                    }
+                    if (round > cup.BestRoundReached)
+                        cup.BestRoundReached = round;
+                    if (round > player.Honours.DraftCupBestRound)
+                        player.Honours.DraftCupBestRound = round;
+                    if (round + 1 >= DraftCup.RoundsTotal)
+                    {
+                        cup.State = DraftCupState.Champion;
+                        player.Honours.DraftCupTitles++;
+                        player.Cosmetics.Owned.Add("avatar_cup_king"); // prestige flair (idempotent)
+                    }
+                    else
+                        cup.RoundIndex = round + 1;
+                }
+                else
+                {
+                    cup.State = DraftCupState.Eliminated;
+                }
+            }
+            return MetaActionResult.Success;
+        }
+
+        static List<(string Name, Position Pos, int Ovr)> MyDraftSquad(PlayerModel player)
+        {
+            List<(string Name, Position Pos, int Ovr)> squad = new List<(string Name, Position Pos, int Ovr)>();
+            foreach ((int _, LegendId id) in player.Draft.Picks)
+            {
+                LegendPlayer p = player.ResolveDraftPlayer(id);
+                if (p != null)
+                    squad.Add((p.Name, p.Position, p.Ovr));
+            }
+            return squad;
+        }
+    }
+
+    /// <summary>
+    /// Enter the World Cup 2026: pay the entry fee (Coins standard / Gems premium), reset the draft and begin
+    /// drafting a one-off XI from the real WC national-team squads. Premium boosts the reward ladder. One run at
+    /// a time, and mutually exclusive with a Draft Cup run (both use the player's single drafted XI).
+    /// </summary>
+    [ModelAction(ActionCodes.PlayerEnterWorldCup)]
+    public class PlayerEnterWorldCup : PlayerAction
+    {
+        public bool Premium { get; private set; }
+
+        PlayerEnterWorldCup() { }
+        public PlayerEnterWorldCup(bool premium = false) { Premium = premium; }
+
+        public override MetaActionResult Execute(PlayerModel player, bool commit)
+        {
+            WorldCupRun cup = player.WorldCup;
+            if (cup.State == WorldCupState.Drafting || cup.State == WorldCupState.Active)
+                return PlayerActionResults.WorldCupBusy;
+            if (player.DraftCup.State == DraftCupState.Drafting || player.DraftCup.State == DraftCupState.Active)
+                return PlayerActionResults.DraftCupBusy;
+            if (player.GameConfig.WorldCupPlayers.Count == 0)
+                return PlayerActionResults.WorldCupUnavailable; // no squad data shipped/published yet
+
+            GlobalConfig global   = player.GameConfig.Global;
+            CurrencyType currency = Premium ? CurrencyType.Gems : CurrencyType.Coins;
+            long         cost     = Premium ? global.WorldCupEntryGems : global.WorldCupEntryCoins;
+            if (!player.Wallet.CanAfford(currency, cost))
+                return PlayerActionResults.NotEnoughCurrency;
+
+            if (commit)
+            {
+                player.Wallet.TrySpend(currency, cost);
+                player.Draft.Reset();
+                cup.State            = WorldCupState.Drafting;
+                cup.RoundIndex       = 0;
+                cup.BestRoundReached = -1;
+                cup.Premium          = Premium;
+                cup.RunCount++;
+                cup.LastMyGoals      = 0;
+                cup.LastOppGoals     = 0;
+                cup.LastScorers      = "";
+                cup.LastOpponent     = "";
+                player.Honours.WorldCupRuns++;
+            }
+            return MetaActionResult.Success;
+        }
+    }
+
+    /// <summary>
+    /// Play the current World Cup round: resolves the drafted XI vs a real nation (escalating strength, weakest
+    /// in the opening round → strongest in the final) via the deterministic match sim, grants the (premium-
+    /// boosted) round reward and advances / crowns champion on a win, or eliminates on a loss. The first call
+    /// once the XI is complete starts the knockout (Drafting → Active).
+    /// </summary>
+    [ModelAction(ActionCodes.PlayerPlayWorldCupRound)]
+    public class PlayerPlayWorldCupRound : PlayerAction
+    {
+        public PlayerPlayWorldCupRound() { }
+
+        public override MetaActionResult Execute(PlayerModel player, bool commit)
+        {
+            WorldCupRun      cup    = player.WorldCup;
+            SharedGameConfig config = player.GameConfig;
+            GlobalConfig     global = config.Global;
+
+            bool draftComplete = player.Draft.HasFormation
+                && config.Formations.TryGetValue(player.Draft.Formation, out FormationInfo formation)
+                && player.Draft.IsComplete(formation);
+
+            if (cup.State == WorldCupState.Drafting)
+            {
+                if (!draftComplete)
+                    return PlayerActionResults.DraftNotComplete;
+            }
+            else if (cup.State != WorldCupState.Active)
+            {
+                return PlayerActionResults.WorldCupNotActive;
+            }
+
+            if (commit)
+            {
+                if (cup.State == WorldCupState.Drafting)
+                {
+                    cup.State      = WorldCupState.Active;
+                    cup.RoundIndex = 0;
+                    player.RecordDraftedXiForPlay(); // scout the XI into My Club + track best-XI overall
+                }
+
+                int         round    = cup.RoundIndex;
+                int         rounds    = WorldCup.RoundsTotal(global);
+                NationInfo  opp       = WorldCup.OpponentNation(cup.RunCount, round, global);
+                LineRatings you       = player.ResolveDraftRatings();
+                LineRatings oppLines  = WorldCup.LinesForNation(opp);
+                ulong       seed      = WorldCup.SeedFor(cup.RunCount, round);
+                MatchResult result    = MatchSim.Resolve(you, oppLines, seed);
+                bool        win       = WorldCup.IsWin(result, you, oppLines);
+
+                cup.LastMyGoals  = result.HomeGoals;
+                cup.LastOppGoals = result.AwayGoals;
+                cup.LastScorers  = WorldCup.ScorersLine(result, MyWcSquad(player), seed);
+                cup.LastOpponent = opp != null ? opp.Badge : "";
+                bool wcChampion  = win && (round + 1 >= rounds);
+                cup.LastReport   = MatchReport.Knockout(opp != null ? opp.DisplayName : "", result.HomeGoals, result.AwayGoals,
+                                       cup.LastScorers, WorldCup.RoundName(global, round), win, wcChampion, seed);
+
+                if (win)
+                {
+                    BracketRoundReward[] ladder = global.WorldCupRoundRewards;
+                    if (round >= 0 && round < ladder.Length)
+                    {
+                        BracketRoundReward reward = ladder[round];
+                        int pct = cup.Premium ? 100 + global.WorldCupPremiumBonusPct : 100;
+                        player.Wallet.Earn(CurrencyType.Coins,  (long)reward.Coins  * pct / 100);
+                        player.Wallet.Earn(CurrencyType.Gems,   (long)reward.Gems   * pct / 100);
+                        player.Wallet.Earn(CurrencyType.Shards, (long)reward.Shards * pct / 100);
+                    }
+                    if (round > cup.BestRoundReached)
+                        cup.BestRoundReached = round;
+                    if (round > player.Honours.WorldCupBestRound)
+                        player.Honours.WorldCupBestRound = round;
+                    if (round + 1 >= rounds)
+                    {
+                        cup.State = WorldCupState.Champion;
+                        player.Honours.WorldCupTitles++;
+                        player.Cosmetics.Owned.Add("avatar_wc_champion"); // prestige flair (idempotent)
+                    }
+                    else
+                        cup.RoundIndex = round + 1;
+                }
+                else
+                {
+                    cup.State = WorldCupState.Eliminated;
+                }
+
+                // A finished run (champion or eliminated) reports the manager's best WC stats to the leaderboard.
+                if (cup.State == WorldCupState.Champion || cup.State == WorldCupState.Eliminated)
+                    player.ServerListener.ReportWorldCupResult(player.Honours.WorldCupTitles, player.Honours.WorldCupBestRound,
+                        player.Honours.BestDraftedXiOvr, player.Honours.WorldCupRuns);
+            }
+            return MetaActionResult.Success;
+        }
+
+        static List<(string Name, Position Pos, int Ovr)> MyWcSquad(PlayerModel player)
+        {
+            List<(string Name, Position Pos, int Ovr)> squad = new List<(string Name, Position Pos, int Ovr)>();
+            foreach ((int _, LegendId id) in player.Draft.Picks)
+            {
+                LegendPlayer p = player.ResolveDraftPlayer(id);
+                if (p != null)
+                    squad.Add((p.Name, p.Position, p.Ovr));
+            }
+            return squad;
+        }
+    }
+
+    /// <summary>
+    /// Open a Scout Pack: spend Gems (or claim the once-per-day free pack), then roll + apply a reward bundle
+    /// (currency + a chance of a new cosmetic and a "scouted" star for the club). The roll is deterministic from
+    /// the open counter, so the client predicts the exact pull the server applies (no client-supplied RNG).
+    /// </summary>
+    [ModelAction(ActionCodes.PlayerOpenPack)]
+    public class PlayerOpenPack : PlayerAction
+    {
+        public string PackId { get; private set; }
+
+        PlayerOpenPack() { }
+        public PlayerOpenPack(string packId) { PackId = packId; }
+
+        public override MetaActionResult Execute(PlayerModel player, bool commit)
+        {
+            GlobalConfig global = player.GameConfig.Global;
+            PackDef def = null;
+            foreach (PackDef p in global.Packs)
+                if (p.Id == PackId) { def = p; break; }
+            if (def == null)
+                return PlayerActionResults.UnknownProduct;
+
+            long today = QuestEngine.DayOf(player.CurrentTime);
+            if (def.IsFreeDaily)
+            {
+                if (player.Packs.LastFreePackDay == today)
+                    return PlayerActionResults.PackAlreadyClaimedToday;
+            }
+            else if (!player.Wallet.CanAfford(CurrencyType.Gems, def.GemCost))
+            {
+                return PlayerActionResults.NotEnoughCurrency;
+            }
+
+            if (commit)
+            {
+                if (!def.IsFreeDaily)
+                    player.Wallet.TrySpend(CurrencyType.Gems, def.GemCost);
+
+                PackReward reward = PackEngine.Roll(def, PackEngine.SeedFor(player.Packs.OpenedCount, def.Id));
+
+                if (reward.Coins > 0)      player.Wallet.Earn(CurrencyType.Coins, reward.Coins);
+                if (reward.Rerolls > 0)    player.Boosts.Rerolls    += reward.Rerolls;     // spent on the next draft
+                if (reward.EliteSpins > 0) player.Boosts.EliteSpins += reward.EliteSpins;
+
+                player.Packs.LastReward = reward;
+                player.Packs.LastPackId = def.Id;
+                player.Packs.OpenedCount++;
+                if (def.IsFreeDaily)
+                    player.Packs.LastFreePackDay = today;
+            }
+            return MetaActionResult.Success;
+        }
+    }
+
+    /// <summary>
+    /// Claim a completed objective's one-time reward. Progress is computed from the live model, so this just
+    /// validates completion + not-already-claimed, then grants the reward and records the claim.
+    /// </summary>
+    [ModelAction(ActionCodes.PlayerClaimObjective)]
+    public class PlayerClaimObjective : PlayerAction
+    {
+        public string ObjectiveId { get; private set; }
+
+        PlayerClaimObjective() { }
+        public PlayerClaimObjective(string objectiveId) { ObjectiveId = objectiveId; }
+
+        public override MetaActionResult Execute(PlayerModel player, bool commit)
+        {
+            ObjectiveDef def = Objectives.Find(ObjectiveId);
+            if (def == null)
+                return PlayerActionResults.UnknownObjective;
+            if (!Objectives.IsComplete(def, player))
+                return PlayerActionResults.ObjectiveNotComplete;
+            if (Objectives.IsClaimed(def, player))
+                return PlayerActionResults.ObjectiveAlreadyClaimed;
+
+            if (commit)
+            {
+                if (def.Coins > 0)  player.Wallet.Earn(CurrencyType.Coins,  def.Coins);
+                if (def.Gems > 0)   player.Wallet.Earn(CurrencyType.Gems,   def.Gems);
+                if (def.Shards > 0) player.Wallet.Earn(CurrencyType.Shards, def.Shards);
+                player.Objectives.Claimed.Add(def.Id);
+            }
+            return MetaActionResult.Success;
+        }
+    }
+
+    /// <summary>
+    /// Buy a Featured Offer bundle (simulated IAP — real builds validate the store receipt). Grants the
+    /// bundle's currency + guaranteed cosmetic; one-time bundles are rejected if already owned.
+    /// </summary>
+    [ModelAction(ActionCodes.PlayerBuyBundle)]
+    public class PlayerBuyBundle : PlayerAction
+    {
+        public string BundleId { get; private set; }
+
+        PlayerBuyBundle() { }
+        public PlayerBuyBundle(string bundleId) { BundleId = bundleId; }
+
+        public override MetaActionResult Execute(PlayerModel player, bool commit)
+        {
+            BundleDef def = null;
+            foreach (BundleDef b in player.GameConfig.Global.Bundles)
+                if (b.Id == BundleId) { def = b; break; }
+            if (def == null)
+                return PlayerActionResults.UnknownProduct;
+            if (def.OneTime && player.Store.Owns(def.Id))
+                return PlayerActionResults.BundleAlreadyOwned;
+
+            if (commit)
+            {
+                if (def.Coins > 0)  player.Wallet.Earn(CurrencyType.Coins,  def.Coins);
+                if (def.Gems > 0)   player.Wallet.Earn(CurrencyType.Gems,   def.Gems);
+                if (def.Shards > 0) player.Wallet.Earn(CurrencyType.Shards, def.Shards);
+                if (!string.IsNullOrEmpty(def.CosmeticId) && player.GameConfig.Cosmetics.ContainsKey(def.CosmeticId))
+                    player.Cosmetics.Owned.Add(def.CosmeticId);
+                if (def.OneTime)
+                    player.Store.BundlesPurchased.Add(def.Id);
+            }
+            return MetaActionResult.Success;
+        }
+    }
+
+    /// <summary> Ask the server to fetch + cache the top World Cup leaderboard for display. </summary>
+    [ModelAction(ActionCodes.PlayerRefreshWorldCupLeaderboard)]
+    public class PlayerRefreshWorldCupLeaderboard : PlayerAction
+    {
+        public PlayerRefreshWorldCupLeaderboard() { }
+
+        public override MetaActionResult Execute(PlayerModel player, bool commit)
+        {
+            if (commit)
+                player.ServerListener.RefreshWorldCupLeaderboard();
+            return MetaActionResult.Success;
+        }
+    }
+
+    /// <summary> Server-set: cache the fetched World Cup leaderboard snapshot for the WC hub. </summary>
+    [ModelAction(ActionCodes.PlayerSetWcLeaderboard)]
+    public class PlayerSetWcLeaderboard : PlayerSynchronizedServerAction
+    {
+        public WorldCupLeaderboardSnapshot Snapshot { get; private set; }
+
+        PlayerSetWcLeaderboard() { }
+        public PlayerSetWcLeaderboard(WorldCupLeaderboardSnapshot snapshot) { Snapshot = snapshot; }
+
+        public override MetaActionResult Execute(PlayerModel player, bool commit)
+        {
+            if (commit && Snapshot != null)
+                player.WcLeaderboard = Snapshot;
             return MetaActionResult.Success;
         }
     }
@@ -1045,6 +1530,7 @@ namespace Game.Logic
             {
                 long coins = player.GameConfig.Global.DailyStreakReward(player.LoginStreak.CurrentStreak);
                 player.Wallet.Earn(CurrencyType.Coins, coins);
+                player.ClientListener.DailyStreakClaimed(player.LoginStreak.CurrentStreak, coins);
             }
             return MetaActionResult.Success;
         }
@@ -1246,6 +1732,63 @@ namespace Game.Logic
         }
     }
 
+    /// <summary>
+    /// P2P: propose a player(+cash)-for-player trade to another manager in the league. The cash is escrowed from
+    /// the wallet up-front (refunded by the server if the league rejects, or on reject/cancel/expiry).
+    /// </summary>
+    [ModelAction(ActionCodes.PlayerLeagueProposeTrade)]
+    public class PlayerLeagueProposeTrade : PlayerAction
+    {
+        public int    ToIndex      { get; private set; }
+        public string GiveLegendId { get; private set; }
+        public string GetLegendId  { get; private set; }
+        public int    Coins        { get; private set; }
+
+        PlayerLeagueProposeTrade() { }
+        public PlayerLeagueProposeTrade(int toIndex, string giveLegendId, string getLegendId, int coins)
+        {
+            ToIndex = toIndex; GiveLegendId = giveLegendId; GetLegendId = getLegendId; Coins = coins;
+        }
+
+        public override MetaActionResult Execute(PlayerModel player, bool commit)
+        {
+            if (!player.League.InLeague)
+                return PlayerActionResults.NotInLeague;
+            if (Coins < 0)
+                return PlayerActionResults.InvalidAmount;
+            if (Coins > 0 && !player.Wallet.CanAfford(CurrencyType.Coins, Coins))
+                return PlayerActionResults.NotEnoughCurrency;
+
+            if (commit)
+            {
+                if (Coins > 0)
+                    player.Wallet.TrySpend(CurrencyType.Coins, Coins); // escrow; server refunds on rejection
+                player.ServerListener.LeagueProposeTrade(player.League.Code, ToIndex, GiveLegendId, GetLegendId, Coins);
+            }
+            return MetaActionResult.Success;
+        }
+    }
+
+    /// <summary> P2P: accept/reject a trade you received, or cancel (Accept=false) one you proposed. </summary>
+    [ModelAction(ActionCodes.PlayerLeagueRespondTrade)]
+    public class PlayerLeagueRespondTrade : PlayerAction
+    {
+        public int  OfferId { get; private set; }
+        public bool Accept  { get; private set; }
+
+        PlayerLeagueRespondTrade() { }
+        public PlayerLeagueRespondTrade(int offerId, bool accept) { OfferId = offerId; Accept = accept; }
+
+        public override MetaActionResult Execute(PlayerModel player, bool commit)
+        {
+            if (!player.League.InLeague)
+                return PlayerActionResults.NotInLeague;
+            if (commit)
+                player.ServerListener.LeagueRespondTrade(player.League.Code, OfferId, Accept);
+            return MetaActionResult.Success;
+        }
+    }
+
     // ──────────────────────────────────────────────────────────────────────────────────────────────────────
     // FOOTDRAFT spin-draft actions (P1). The draft builds PlayerModel.Draft (a DraftedSquad) one slot at a time:
     //   ChooseFormation → (per open slot) SpinForSlot ⇒ server rolls ⇒ SetSpinOffer ⇒ PickFromOffer.
@@ -1308,13 +1851,21 @@ namespace Game.Logic
             // A pending offer for a *different* slot must be resolved (picked) first.
             if (draft.HasPendingOffer && draft.PendingOfferSlot != Slot)
                 return PlayerActionResults.OfferAlreadyPending;
+            // Free rerolls up to the cap, then spend a Scout-Pack reroll boost if the manager has one.
+            bool useBoostReroll = false;
             if (isReroll && draft.RerollsUsed >= DraftEngine.DefaultRerollCap)
-                return PlayerActionResults.NoRerollsLeft;
+            {
+                if (player.Boosts.Rerolls <= 0)
+                    return PlayerActionResults.NoRerollsLeft;
+                useBoostReroll = true;
+            }
 
             if (commit)
             {
                 if (isReroll)
                     draft.RerollsUsed++;
+                if (useBoostReroll)
+                    player.Boosts.Rerolls--;
                 // The server performs the actual roll and writes the offer back (no-op on the client).
                 player.ServerListener.SpinDraftSlot(Slot);
             }
@@ -1339,6 +1890,20 @@ namespace Game.Logic
                 player.Draft.PendingOfferSlot = Slot;
                 player.Draft.PendingOffer     = Bucket;
             }
+            return MetaActionResult.Success;
+        }
+    }
+
+    /// <summary> Server-issued: consume one elite-spin boost (the server rolled a guaranteed top-tier bucket). </summary>
+    [ModelAction(ActionCodes.PlayerConsumeEliteSpin)]
+    public class PlayerConsumeEliteSpin : PlayerSynchronizedServerAction
+    {
+        public PlayerConsumeEliteSpin() { }
+
+        public override MetaActionResult Execute(PlayerModel player, bool commit)
+        {
+            if (commit && player.Boosts.EliteSpins > 0)
+                player.Boosts.EliteSpins--;
             return MetaActionResult.Success;
         }
     }
@@ -1382,7 +1947,8 @@ namespace Game.Logic
                 return PlayerActionResults.LegendNotInOffer;
 
             LegendId legendId = LegendId.FromString(PickedLegendId);
-            if (!player.GameConfig.Legends.TryGetValue(legendId, out LegendPlayer legend))
+            LegendPlayer legend = player.ResolveDraftPlayer(legendId); // legends OR World Cup squad players
+            if (legend == null)
                 return PlayerActionResults.LegendNotInOffer;
             if (legend.Position != formation.Slots[slot])
                 return PlayerActionResults.WrongPositionForSlot;
@@ -1432,12 +1998,20 @@ namespace Game.Logic
     [ModelAction(ActionCodes.PlayerCreateLeague)]
     public class PlayerCreateLeague : PlayerAction
     {
-        public string LeagueName { get; private set; }
-        public string Code       { get; private set; }
-        public string TeamName   { get; private set; }
+        public string LeagueName  { get; private set; }
+        public string Code        { get; private set; }
+        public string TeamName    { get; private set; }
+        public bool   HideRatings { get; private set; }
+        public int    MaxPerClub  { get; private set; }
+        public string CapBands    { get; private set; }
+        public string DraftPin    { get; private set; }
 
         PlayerCreateLeague() { }
-        public PlayerCreateLeague(string leagueName, string code, string teamName) { LeagueName = leagueName; Code = code; TeamName = teamName; }
+        public PlayerCreateLeague(string leagueName, string code, string teamName, bool hideRatings = false, int maxPerClub = 1, string capBands = "90:2,80:3,75:4", string draftPin = "")
+        {
+            LeagueName = leagueName; Code = code; TeamName = teamName;
+            HideRatings = hideRatings; MaxPerClub = maxPerClub; CapBands = capBands ?? ""; DraftPin = draftPin ?? "";
+        }
 
         public override MetaActionResult Execute(PlayerModel player, bool commit)
         {
@@ -1448,7 +2022,7 @@ namespace Game.Logic
             if (!string.IsNullOrWhiteSpace(TeamName))
                 player.TeamName = TeamName.Trim(); // remembered for next time + used as the league member name
             if (commit)
-                player.ServerListener.CreateLeague(LeagueName, Code);
+                player.ServerListener.CreateLeague(LeagueName, Code, HideRatings, MaxPerClub, CapBands, DraftPin);
             return MetaActionResult.Success;
         }
     }
@@ -1461,11 +2035,20 @@ namespace Game.Logic
     [ModelAction(ActionCodes.PlayerCreateSoloLeague)]
     public class PlayerCreateSoloLeague : PlayerAction
     {
-        public string Code     { get; private set; }
-        public string TeamName { get; private set; }
+        public string Code        { get; private set; }
+        public string TeamName    { get; private set; }
+        public bool   HideRatings { get; private set; }
+        public int    MaxPerClub  { get; private set; }
+        public string CapBands    { get; private set; }
+
+        public string DraftPin    { get; private set; }
 
         PlayerCreateSoloLeague() { }
-        public PlayerCreateSoloLeague(string code, string teamName) { Code = code; TeamName = teamName; }
+        public PlayerCreateSoloLeague(string code, string teamName, bool hideRatings = false, int maxPerClub = 1, string capBands = "90:2,80:3,75:4", string draftPin = "")
+        {
+            Code = code; TeamName = teamName;
+            HideRatings = hideRatings; MaxPerClub = maxPerClub; CapBands = capBands ?? ""; DraftPin = draftPin ?? "";
+        }
 
         public override MetaActionResult Execute(PlayerModel player, bool commit)
         {
@@ -1476,7 +2059,7 @@ namespace Game.Logic
             if (!string.IsNullOrWhiteSpace(TeamName))
                 player.TeamName = TeamName.Trim();
             if (commit)
-                player.ServerListener.CreateSoloLeague(Code);
+                player.ServerListener.CreateSoloLeague(Code, HideRatings, MaxPerClub, CapBands, DraftPin);
             return MetaActionResult.Success;
         }
     }
@@ -1608,6 +2191,22 @@ namespace Game.Logic
                     player.League.LastError = "";
                     if (PlayResult != null)
                         player.League.LastPlayResult = PlayResult;
+
+                    // Trophy cabinet: when a season finishes, record it once (deduped by league code) — a title
+                    // if the manager topped the table, plus an invincible-season honour if they went unbeaten.
+                    if (Snapshot != null && Snapshot.State == LeagueState.Finished
+                        && player.Honours.LastScoredLeagueCode != Code)
+                    {
+                        player.Honours.LastScoredLeagueCode = Code;
+                        player.Honours.LeagueSeasonsPlayed++;
+                        if (Snapshot.Table.Count > 0 && Snapshot.Table[0].TeamIndex == Snapshot.MyIndex)
+                            player.Honours.LeagueTitles++;
+                        if (Snapshot.Invincible)
+                        {
+                            player.Honours.InvincibleSeasons++;
+                            player.Cosmetics.Owned.Add("avatar_invincible"); // prestige flair (idempotent)
+                        }
+                    }
                 }
             }
             return MetaActionResult.Success;

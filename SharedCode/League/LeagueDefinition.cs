@@ -94,7 +94,40 @@ namespace Game.Logic
         /// <summary> A club-season counts as elite when its squad's average OVR is at least this. </summary>
         [MetaMember(18)] public int EliteSpinMinAvgOvr { get; private set; } = 81;
 
+        // --- Squad-building rules ("creating difficulty and friction between players is key" — tester) ---
+        /// <summary> When true a manager may not field two players from the same club in one XI (any era). </summary>
+        [MetaMember(19)] public bool   NoSameClub  { get; private set; } = true;
+        /// <summary>
+        /// Cumulative OVR-band caps, encoded "threshold:max,threshold:max" (sheet-friendly). Default
+        /// "90:2,80:3,75:4" = at most 2 players rated 90+, 3 rated 80+, 4 rated 75+ (the tester's exact bands).
+        /// Each band counts ALL players at/above its threshold, so the caps nest. Blank = no caps.
+        /// </summary>
+        [MetaMember(20)] public string OvrCapBands { get; private set; } = "90:2,80:3,75:4";
+
         public LeagueDefinitionId ConfigKey => Id;
+
+        /// <summary> Parsed OVR-band caps for this definition's default bands. </summary>
+        public List<(int Threshold, int Max)> OvrCaps() => ParseOvrCaps(OvrCapBands);
+
+        /// <summary>
+        /// Parses an OVR-cap-bands string ("threshold:max,threshold:max", e.g. "90:2,80:3,75:4") into (threshold,
+        /// max) pairs, highest threshold first. Empty/blank → no caps. Shared by the config default + per-league
+        /// chosen bands so the client and server agree.
+        /// </summary>
+        public static List<(int Threshold, int Max)> ParseOvrCaps(string bands)
+        {
+            List<(int Threshold, int Max)> caps = new List<(int Threshold, int Max)>();
+            if (string.IsNullOrWhiteSpace(bands))
+                return caps;
+            foreach (string part in bands.Split(','))
+            {
+                string[] kv = part.Split(':');
+                if (kv.Length == 2 && int.TryParse(kv[0].Trim(), out int th) && int.TryParse(kv[1].Trim(), out int mx))
+                    caps.Add((th, mx));
+            }
+            caps.Sort((a, b) => b.Threshold.CompareTo(a.Threshold));
+            return caps;
+        }
 
         /// <summary> Wallet-Coin cost of signing a player with the given OVR. Integer math — runs in client-predicted actions. </summary>
         public long TransferCostFor(int ovr)

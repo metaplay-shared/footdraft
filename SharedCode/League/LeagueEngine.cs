@@ -26,7 +26,7 @@ namespace Game.Logic
         }
     }
 
-    /// <summary> A played fixture's scoreline (input to the table). </summary>
+    /// <summary> A played fixture's scoreline + named goal details (input to the table + the results history). </summary>
     [MetaSerializable]
     public class LeagueResult
     {
@@ -34,6 +34,8 @@ namespace Game.Logic
         [MetaMember(2)] public int AwayIndex { get; set; }
         [MetaMember(3)] public int HomeGoals { get; set; }
         [MetaMember(4)] public int AwayGoals { get; set; }
+        /// <summary> Timed goals with named scorer/assister (the "see who scored" detail). May be shorter than the scoreline on a goal-bonus matchday. </summary>
+        [MetaMember(5)] public List<MatchGoalDetail> Goals { get; set; } = new List<MatchGoalDetail>();
 
         public LeagueResult() { }
         public LeagueResult(int homeIndex, int awayIndex, int homeGoals, int awayGoals)

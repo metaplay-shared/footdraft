@@ -16,16 +16,28 @@ namespace Game.Server
         public string PlayerName { get; private set; }
         public string Crest      { get; private set; }
         /// <summary> Single-player season: skip the lobby and start the draft immediately (CPU teams fill the league at season lock). </summary>
-        public bool   Solo       { get; private set; }
+        public bool   Solo        { get; private set; }
+        /// <summary> Hard mode: hide player ratings in this league's draft + roster UI. </summary>
+        public bool   HideRatings { get; private set; }
+        /// <summary> Rule: max players from one club (0 = no limit, 1 = one-per-club). </summary>
+        public int    MaxPerClub  { get; private set; }
+        /// <summary> Rule: chosen OVR-cap-bands ("90:2,80:3,75:4"); "" = no caps. </summary>
+        public string CapBands    { get; private set; }
+        /// <summary> Pin-draft House Rule ("era:E2010s,elite:1"); "" = no pin (see <see cref="Game.Logic.LeaguePin"/>). </summary>
+        public string DraftPin    { get; private set; }
 
         LeagueCreateRequest() { }
-        public LeagueCreateRequest(string code, string leagueName, string playerName, string crest, bool solo = false)
+        public LeagueCreateRequest(string code, string leagueName, string playerName, string crest, bool solo = false, bool hideRatings = false, int maxPerClub = 1, string capBands = "90:2,80:3,75:4", string draftPin = "")
         {
-            Code       = code;
-            LeagueName = leagueName;
-            PlayerName = playerName;
-            Crest      = crest;
-            Solo       = solo;
+            Code        = code;
+            LeagueName  = leagueName;
+            PlayerName  = playerName;
+            Crest       = crest;
+            Solo        = solo;
+            HideRatings = hideRatings;
+            MaxPerClub  = maxPerClub;
+            CapBands    = capBands ?? "";
+            DraftPin    = draftPin ?? "";
         }
     }
 
@@ -214,6 +226,45 @@ namespace Game.Server
 
         LeagueAdminPlayMatchdayRequest() { }
         public LeagueAdminPlayMatchdayRequest(string code) { Code = code; }
+    }
+
+    /// <summary> P2P: propose a player(+cash)-for-player trade to another manager in the league. </summary>
+    [MetaMessage(MessageCodes.LeagueTradeOfferRequest, MessageDirection.ServerInternal)]
+    public class LeagueTradeOfferRequest : EntityAskRequest<LeagueOpResponse>
+    {
+        public string Code         { get; private set; }
+        public int    ToIndex      { get; private set; } // the target manager's member index
+        public string GiveLegendId { get; private set; } // a player from the proposer's roster
+        public string GetLegendId  { get; private set; } // a player from the target's roster
+        public int    Coins        { get; private set; } // cash the proposer adds (already escrowed from their wallet)
+
+        LeagueTradeOfferRequest() { }
+        public LeagueTradeOfferRequest(string code, int toIndex, string giveLegendId, string getLegendId, int coins)
+        {
+            Code = code; ToIndex = toIndex; GiveLegendId = giveLegendId; GetLegendId = getLegendId; Coins = coins;
+        }
+    }
+
+    /// <summary> P2P: respond to a pending trade — the recipient accepts/rejects, or the proposer cancels (Accept=false). </summary>
+    [MetaMessage(MessageCodes.LeagueTradeRespondRequest, MessageDirection.ServerInternal)]
+    public class LeagueTradeRespondRequest : EntityAskRequest<LeagueOpResponse>
+    {
+        public string Code    { get; private set; }
+        public int    OfferId { get; private set; }
+        public bool   Accept  { get; private set; }
+
+        LeagueTradeRespondRequest() { }
+        public LeagueTradeRespondRequest(string code, int offerId, bool accept) { Code = code; OfferId = offerId; Accept = accept; }
+    }
+
+    /// <summary> Cast from the LeagueActor to a player's actor to grant/refund trade coins (delta &gt; 0 = grant). </summary>
+    [MetaMessage(MessageCodes.LeagueAdjustCoinsMessage, MessageDirection.ServerInternal)]
+    public class LeagueAdjustCoinsMessage : MetaMessage
+    {
+        public long Delta { get; private set; }
+
+        LeagueAdjustCoinsMessage() { }
+        public LeagueAdjustCoinsMessage(long delta) { Delta = delta; }
     }
 
     /// <summary> League op result: an error string ("" on success) plus the caller's fresh snapshot. </summary>

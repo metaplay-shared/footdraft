@@ -55,7 +55,7 @@
 
     private IEnumerable<CosmeticItem> Items(CosmeticKind kind) =>
         Player == null ? Enumerable.Empty<CosmeticItem>()
-                       : Player.GameConfig.Cosmetics.Values.Where(c => c.Kind == kind);
+                       : Player.GameConfig.Cosmetics.Values.Where(c => c.Kind == kind && (!c.Exclusive || Player.Cosmetics.Owns(c.Id)));
 
     private bool IsEquipped(CosmeticItem c) =>
         Player != null && (c.Kind == CosmeticKind.Avatar ? Player.Cosmetics.EquippedAvatar : Player.Cosmetics.EquippedDiceSkin) == c.Id;

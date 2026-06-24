@@ -41,6 +41,30 @@ namespace Server.Migrations
                     b.ToTable("LeagueRegistries", (string)null);
                 });
 
+            modelBuilder.Entity("Game.Server.PersistedWcLeaderboard", b =>
+                {
+                    b.Property<string>("EntityId")
+                        .HasMaxLength(64)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<bool>("IsFinal")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("Payload")
+                        .IsRequired()
+                        .HasColumnType("longblob");
+
+                    b.Property<DateTime>("PersistedAt")
+                        .HasColumnType("DateTime");
+
+                    b.Property<int>("SchemaVersion")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("EntityId");
+
+                    b.ToTable("WorldCupLeaderboards", (string)null);
+                });
+
             modelBuilder.Entity("Metaplay.Cloud.Persistence.DatabaseMetaInfo", b =>
                 {
                     b.Property<int>("Version")

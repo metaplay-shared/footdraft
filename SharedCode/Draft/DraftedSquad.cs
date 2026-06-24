@@ -49,6 +49,16 @@ namespace Game.Logic
             PendingOffer     = null;
         }
 
+        /// <summary> Clears the whole draft back to empty — used to start a fresh Draft Cup XI. </summary>
+        public void Reset()
+        {
+            Formation   = null;
+            Picks.Clear();
+            RerollsUsed = 0;
+            Locked      = false;
+            ClearOffer();
+        }
+
         public bool IsSlotFilled(int slot) => Picks.ContainsKey(slot);
 
         /// <summary> True when every slot of the chosen formation is filled. </summary>

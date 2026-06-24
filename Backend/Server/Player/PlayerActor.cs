@@ -127,10 +127,35 @@ namespace Game.Server.Player
 
         void IPlayerModelServerListener.RefreshForm() => EnqueueOnActorContext(RefreshFormAsync);
 
+        void IPlayerModelServerListener.ReportWorldCupResult(int titles, int bestRound, int bestXiOvr, int runs) => EnqueueOnActorContext(() => ReportWorldCupAsync(titles, bestRound, bestXiOvr, runs));
+
+        void IPlayerModelServerListener.RefreshWorldCupLeaderboard() => EnqueueOnActorContext(RefreshWorldCupLeaderboardAsync);
+
+        async Task ReportWorldCupAsync(int titles, int bestRound, int bestXiOvr, int runs)
+        {
+            try
+            {
+                await EntityAskAsync<EntityAskOk>(WorldCupLeaderboardActor.LeaderboardEntityId,
+                    new WcLeaderboardReport(LeagueMemberName(), titles, bestRound, bestXiOvr, runs));
+            }
+            catch (Exception ex) { _log.Warning("World Cup leaderboard report failed: {Error}", ex); }
+        }
+
+        async Task RefreshWorldCupLeaderboardAsync()
+        {
+            try
+            {
+                WcLeaderboardGetSnapshotResponse r = await EntityAskAsync<WcLeaderboardGetSnapshotResponse>(
+                    WorldCupLeaderboardActor.LeaderboardEntityId, new WcLeaderboardGetSnapshotRequest(50));
+                EnqueueServerAction(new PlayerSetWcLeaderboard(r.Snapshot));
+            }
+            catch (Exception ex) { _log.Warning("World Cup leaderboard refresh failed: {Error}", ex); }
+        }
+
         void IPlayerModelServerListener.SpinDraftSlot(int slot) => EnqueueOnActorContext(() => SpinDraftSlotInternal(slot));
 
-        void IPlayerModelServerListener.CreateLeague(string leagueName, string code) => EnqueueOnActorContext(() => CreateLeagueAsync(leagueName, code, solo: false));
-        void IPlayerModelServerListener.CreateSoloLeague(string code)  => EnqueueOnActorContext(() => CreateLeagueAsync("Solo Season", code, solo: true));
+        void IPlayerModelServerListener.CreateLeague(string leagueName, string code, bool hideRatings, int maxPerClub, string capBands, string draftPin) => EnqueueOnActorContext(() => CreateLeagueAsync(leagueName, code, solo: false, hideRatings: hideRatings, maxPerClub: maxPerClub, capBands: capBands, draftPin: draftPin));
+        void IPlayerModelServerListener.CreateSoloLeague(string code, bool hideRatings, int maxPerClub, string capBands, string draftPin)  => EnqueueOnActorContext(() => CreateLeagueAsync("Solo Season", code, solo: true, hideRatings: hideRatings, maxPerClub: maxPerClub, capBands: capBands, draftPin: draftPin));
         void IPlayerModelServerListener.JoinLeague(string code)        => EnqueueOnActorContext(() => JoinLeagueAsync(code));
         void IPlayerModelServerListener.LeaveLeague(string code)       => EnqueueOnActorContext(() => LeaveLeagueAsync(code));
         void IPlayerModelServerListener.StartLeagueSeason(string code) => EnqueueOnActorContext(() => StartLeagueSeasonAsync(code));
@@ -142,6 +167,9 @@ namespace Game.Server.Player
         void IPlayerModelServerListener.LeagueDraftAutoPick(string code, bool fillAll)        => EnqueueOnActorContext(() => LeagueAutoPickAsync(code, fillAll));
         void IPlayerModelServerListener.SimulateLeagueSeason(string code)                     => EnqueueOnActorContext(() => SimulateLeagueAsync(code));
         void IPlayerModelServerListener.LeagueTransferSwap(string code, string dropLegendId, string addLegendId, bool payWithGems) => EnqueueOnActorContext(() => LeagueTransferSwapAsync(code, dropLegendId, addLegendId, payWithGems));
+
+        void IPlayerModelServerListener.LeagueProposeTrade(string code, int toIndex, string giveLegendId, string getLegendId, int coins) => EnqueueOnActorContext(() => LeagueProposeTradeAsync(code, toIndex, giveLegendId, getLegendId, coins));
+        void IPlayerModelServerListener.LeagueRespondTrade(string code, int offerId, bool accept) => EnqueueOnActorContext(() => LeagueRespondTradeAsync(code, offerId, accept));
 
         #endregion
 
@@ -314,12 +342,12 @@ namespace Game.Server.Player
             return "⚽";
         }
 
-        async Task CreateLeagueAsync(string leagueName, string code, bool solo)
+        async Task CreateLeagueAsync(string leagueName, string code, bool solo, bool hideRatings = false, int maxPerClub = 1, string capBands = "90:2,80:3,75:4", string draftPin = "")
         {
             try
             {
                 LeagueOpResponse r = await EntityAskAsync<LeagueOpResponse>(LeagueActor.LeagueEntityId,
-                    new LeagueCreateRequest(code, leagueName, LeagueMemberName(), LeagueCrest(), solo));
+                    new LeagueCreateRequest(code, leagueName, LeagueMemberName(), LeagueCrest(), solo, hideRatings, maxPerClub, capBands, draftPin));
                 EnqueueServerAction(new PlayerSetLeagueState(r.Snapshot?.Code ?? "", r.Snapshot, r.Error, null));
             }
             catch (Exception ex) { _log.Warning("CreateLeague failed: {Error}", ex); }
@@ -441,7 +469,50 @@ namespace Game.Server.Player
                 _log.Warning("LeagueTransferSwap failed: {Error}", ex);
                 if (chargedAmount > 0)
                     EnqueueServerAction(new PlayerRefundLeagueCharge(chargedCurrency, chargedAmount));
+                // Always re-sync the client even on exception: the wallet charge was refunded above, but without
+                // a state push the client (which optimistically cleared its selection) would show the swap as a
+                // silent no-op. Surface a friendly error so the user knows to retry instead of it just vanishing.
+                EnqueueServerAction(new PlayerSetLeagueState(code, null, "Transfer failed — please try again.", null));
             }
+        }
+
+        async Task LeagueProposeTradeAsync(string code, int toIndex, string giveLegendId, string getLegendId, int coins)
+        {
+            // The cash was escrowed from the wallet by the client-predicted action; refund it if the offer is rejected.
+            try
+            {
+                LeagueOpResponse r = await EntityAskAsync<LeagueOpResponse>(LeagueActor.LeagueEntityId,
+                    new LeagueTradeOfferRequest(code, toIndex, giveLegendId, getLegendId, coins));
+                if (!string.IsNullOrEmpty(r.Error) && coins > 0)
+                    EnqueueServerAction(new PlayerRefundLeagueCharge(CurrencyType.Coins, coins));
+                EnqueueServerAction(new PlayerSetLeagueState(r.Snapshot?.Code ?? code, r.Snapshot, r.Error, null));
+            }
+            catch (Exception ex)
+            {
+                _log.Warning("LeagueProposeTrade failed: {Error}", ex);
+                if (coins > 0)
+                    EnqueueServerAction(new PlayerRefundLeagueCharge(CurrencyType.Coins, coins));
+                EnqueueServerAction(new PlayerSetLeagueState(code, null, "Trade offer failed — please try again.", null));
+            }
+        }
+
+        async Task LeagueRespondTradeAsync(string code, int offerId, bool accept)
+        {
+            try
+            {
+                LeagueOpResponse r = await EntityAskAsync<LeagueOpResponse>(LeagueActor.LeagueEntityId,
+                    new LeagueTradeRespondRequest(code, offerId, accept));
+                EnqueueServerAction(new PlayerSetLeagueState(r.Snapshot?.Code ?? code, r.Snapshot, r.Error, null));
+            }
+            catch (Exception ex) { _log.Warning("LeagueRespondTrade failed: {Error}", ex); }
+        }
+
+        /// <summary> The league grants/refunds this manager's trade coins (delta &gt; 0 = a payout received). </summary>
+        [MessageHandler]
+        public void HandleLeagueAdjustCoins(EntityId from, LeagueAdjustCoinsMessage msg)
+        {
+            if (msg.Delta > 0)
+                EnqueueServerAction(new PlayerRefundLeagueCharge(CurrencyType.Coins, msg.Delta));
         }
 
         async Task LeagueAutoPickAsync(string code, bool fillAll)
@@ -497,14 +568,20 @@ namespace Game.Server.Player
             if (slot < 0 || slot >= formation.Slots.Count || draft.IsSlotFilled(slot))
                 return;
 
-            // Build buckets + a lookup from the legend corpus (static content in v1; production reads hot-config).
-            List<LegendPlayer> corpus = new List<LegendPlayer>(LegendContent.Legends);
+            // Source the draft pool by mode: a World Cup run spins NATION buckets from the WC squads; otherwise
+            // (Draft Cup / matchmaking prep) it spins Club×Era buckets from the legend corpus. Static content in
+            // v1 (production reads hot-config).
+            bool worldCup = Model.WorldCup != null && Model.WorldCup.State == WorldCupState.Drafting;
+
+            List<LegendPlayer> corpus = worldCup
+                ? new List<LegendPlayer>(WorldCupContent.Players)
+                : new List<LegendPlayer>(LegendContent.Legends);
             Dictionary<string, LegendPlayer> byId = new Dictionary<string, LegendPlayer>();
             foreach (LegendPlayer p in corpus)
                 byId[p.Id.Value] = p;
             Func<LegendId, LegendPlayer> lookup = id => byId.TryGetValue(id.Value, out LegendPlayer p) ? p : null;
 
-            // The legends already drafted (excluded from candidacy).
+            // The players already drafted (excluded from candidacy).
             HashSet<string> picked = new HashSet<string>();
             foreach ((int _, LegendId id) in draft.Picks)
                 picked.Add(id.Value);
@@ -512,7 +589,7 @@ namespace Game.Server.Player
             // Prefer buckets that actually offer an undrafted candidate for this slot's position (avoid dead spins),
             // falling back to all buckets if none qualify.
             Position need = formation.Slots[slot];
-            List<SpinBucket> allBuckets = DraftEngine.BuildBuckets(corpus);
+            List<SpinBucket> allBuckets = worldCup ? WorldCupContent.BuildNationBuckets() : DraftEngine.BuildBuckets(corpus);
             List<SpinBucket> viable = new List<SpinBucket>();
             foreach (SpinBucket b in allBuckets)
                 if (DraftEngine.CandidatesForSlot(b, need, lookup, picked).Count > 0)
@@ -520,6 +597,30 @@ namespace Game.Server.Player
             List<SpinBucket> pool = viable.Count > 0 ? viable : allBuckets;
             if (pool.Count == 0)
                 return;
+
+            // Scout-Pack elite spin: while the manager holds elite-spin boosts, roll from the strongest buckets
+            // (avg OVR ≥ threshold) for this slot and consume one. Falls back to the normal pool if none qualify.
+            if (Model.Boosts != null && Model.Boosts.EliteSpins > 0)
+            {
+                const int eliteAvgOvr = 82;
+                List<SpinBucket> elite = new List<SpinBucket>();
+                foreach (SpinBucket b in pool)
+                {
+                    long sum = 0; int cnt = 0;
+                    foreach (LegendId id in b.CandidateIds)
+                    {
+                        LegendPlayer p = lookup(id);
+                        if (p != null) { sum += p.Ovr; cnt++; }
+                    }
+                    if (cnt > 0 && sum >= (long)eliteAvgOvr * cnt)
+                        elite.Add(b);
+                }
+                if (elite.Count > 0)
+                {
+                    pool = elite;
+                    EnqueueServerAction(new PlayerConsumeEliteSpin());
+                }
+            }
 
             Metaplay.Core.RandomPCG rng = Metaplay.Core.RandomPCG.CreateNew();
             SpinBucket chosen = DraftEngine.Spin(pool, rng);

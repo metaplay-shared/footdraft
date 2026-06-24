@@ -1,0 +1,232 @@
+@using System.Collections.Generic
+@using System.Linq
+@using Game.Logic
+@using Metaplay.Core
+@using WebClientBase.Services
+@inject MetaplayClientService MetaplayService
+@implements IDisposable
+
+@* FOOTDRAFT Draft Cup (FUT-Draft-style paid mode): pay an entry fee → draft a one-off XI (reuses DraftHub) →
+   play a 4-round knockout vs escalating CPU sides for a reward ladder. All state is PlayerModel.DraftCup +
+   client-predicted actions (deterministic MatchSim), so no server round-trip is needed. *@
+
+@if (Player == null || Config == null)
+{
+    <div class="t38-bg fixed inset-0 z-40 flex items-center justify-center"><p class="text-white/50">Loading…</p></div>
+}
+else if (_inDraft && Cup.State == DraftCupState.Drafting)
+{
+    @* Drafting the one-off Cup XI — reuse the full spin-draft hub. *@
+    <DraftHub OnClose="@(() => _inDraft = false)" />
+}
+else
+{
+    <div class="t38-bg fixed inset-0 z-40 overflow-y-auto t38-under-hud" data-testid="draftcup-panel"
+         style="padding-left:1rem;padding-right:1rem;padding-bottom:calc(7rem + env(safe-area-inset-bottom));">
+        <div class="w-full mx-auto flex flex-col gap-3" style="max-width:30rem;">
+
+            <div class="flex items-center justify-between pt-3">
+                <h1 class="t38-display text-2xl text-white">🏆 DRAFT CUP</h1>
+                <button class="text-xs px-3 py-1.5 rounded-xl" style="background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.6);"
+                        @onclick="OnClose">✕ CLOSE</button>
+            </div>
+
+            @if (Cup.State == DraftCupState.None || Cup.State == DraftCupState.Eliminated || Cup.State == DraftCupState.Champion)
+            {
+                @* ---------- Entry screen (also the re-enter screen after a finished run) ---------- *@
+                @if (Cup.State == DraftCupState.Champion)
+                {
+                    <div class="t38-card px-5 py-5 flex flex-col items-center text-center" style="border-color:rgba(233,185,73,0.5);">
+                        <span class="text-5xl mb-1">🏆</span>
+                        <p class="t38-display text-xl" style="color:var(--t38-amber);">CHAMPION!</p>
+                        <p class="text-xs text-white/55 mt-1">Won all @DraftCup.RoundsTotal rounds · @Cup.LastMyGoals–@Cup.LastOppGoals in the final</p>
+                        @if (!string.IsNullOrEmpty(Cup.LastReport))
+                        {
+                            <p class="text-[11px] text-white/70 mt-1.5" style="font-style:italic;">@Cup.LastReport</p>
+                        }
+                    </div>
+                }
+                else if (Cup.State == DraftCupState.Eliminated)
+                {
+                    <div class="t38-card px-5 py-4 flex flex-col items-center text-center">
+                        <p class="t38-display text-lg text-white/85">Knocked out</p>
+                        <p class="text-xs text-white/55 mt-1">Lost @Cup.LastMyGoals–@Cup.LastOppGoals in the @DraftCup.RoundName(Cup.RoundIndex)@(Cup.BestRoundReached >= 0 ? $" · best: {DraftCup.RoundName(Cup.BestRoundReached)}" : "")</p>
+                        @if (!string.IsNullOrEmpty(Cup.LastReport))
+                        {
+                            <p class="text-[11px] text-white/70 mt-1.5" style="font-style:italic;">@Cup.LastReport</p>
+                        }
+                    </div>
+                }
+
+                <p class="text-xs text-white/55 text-center mt-1">Pay an entry, draft a one-off XI, win the knockout for the reward ladder.</p>
+
+                <button class="t38-cta text-base w-full py-3.5 t38-tap flex items-center justify-center gap-2" data-testid="enter-standard"
+                        @onclick="@(() => Enter(false))">
+                    @(CanAfford(false) ? $"ENTER — 🪙 {Global.DraftCupEntryCoins}" : $"🪙 {Global.DraftCupEntryCoins} — GET COINS →")
+                </button>
+                <button class="t38-marquee-btn t38-shine text-base w-full py-3 t38-tap" data-testid="enter-premium"
+                        style="@(CanAfford(true) ? "" : "filter:grayscale(0.3) brightness(0.85);")"
+                        @onclick="@(() => Enter(true))">
+                    ⭐ PREMIUM — 💎 @Global.DraftCupEntryGems · +@Global.DraftCupPremiumBonusPct% rewards
+                </button>
+
+                <button class="t38-card px-4 py-2.5 flex items-center gap-3 t38-tap w-full text-left" data-testid="open-scout"
+                        @onclick="@(() => _showPacks = true)">
+                    <span class="text-2xl">🎒</span>
+                    <div class="flex-1 min-w-0">
+                        <div class="text-xs text-white" style="font-weight:700;">Open a Scout Pack</div>
+                        <div class="text-[10px] text-white/45">@BoostText</div>
+                    </div>
+                    <span class="t38-label text-[9px] px-2 py-1 rounded-full" style="background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.7);">BOOST →</span>
+                </button>
+
+                @RewardLadder(showProgress: false)
+            }
+            else if (Cup.State == DraftCupState.Drafting)
+            {
+                @* ---------- Drafting phase (DraftHub closed) ---------- *@
+                @if (DraftComplete)
+                {
+                    <div class="t38-card px-5 py-5 flex flex-col items-center text-center">
+                        <span class="text-4xl mb-1">✅</span>
+                        <p class="t38-display text-lg text-white">Your Cup XI is ready</p>
+                        <p class="text-xs text-white/55 mt-1">Overall @MyOvr@(Cup.Premium ? " · ⭐ premium run" : "")</p>
+                    </div>
+                    <button class="t38-cta text-lg w-full py-4 t38-tap" data-testid="play-draftcup"
+                            @onclick="@(() => MetaplayService.PlayDraftCupRound())">▶ PLAY @DraftCup.RoundName(0).ToUpperInvariant()</button>
+                    <button class="text-xs text-white/45 py-1" @onclick="@(() => _inDraft = true)">✎ edit my XI</button>
+                }
+                else
+                {
+                    <div class="t38-card px-5 py-6 flex flex-col items-center text-center">
+                        <span class="text-4xl mb-2">🎰</span>
+                        <p class="t38-display text-lg text-white">Draft your Cup XI</p>
+                        <p class="text-xs text-white/45 mt-1 mb-4">Spin + pick 11 legends. This XI plays the whole knockout.</p>
+                        <button class="t38-cta text-lg w-full py-3.5 t38-tap" data-testid="open-draft" @onclick="@(() => _inDraft = true)">DRAFT NOW&nbsp; →</button>
+                    </div>
+                }
+                @RewardLadder(showProgress: false)
+            }
+            else if (Cup.State == DraftCupState.Active)
+            {
+                @* ---------- Knockout in progress ---------- *@
+                <div class="t38-card px-5 py-4 flex flex-col items-center text-center @(Cup.Premium ? "t38-turn" : "")">
+                    <span class="t38-label text-[10px] text-white/45">Round @(Cup.RoundIndex + 1) / @DraftCup.RoundsTotal@(Cup.Premium ? " · ⭐ premium" : "")</span>
+                    <p class="t38-display text-2xl text-white mt-1">@DraftCup.RoundName(Cup.RoundIndex)</p>
+                    <p class="text-xs text-white/55 mt-1">Your XI (OVR @MyOvr) vs a @OppOvr-rated side</p>
+                </div>
+
+                @if (Cup.RoundIndex > 0 || Cup.LastMyGoals + Cup.LastOppGoals > 0)
+                {
+                    <div class="t38-card px-4 py-3 text-center" data-testid="draftcup-result">
+                        <span class="t38-label text-[10px] text-white/40">last round</span>
+                        <p class="t38-display text-2xl text-white mt-1">@Cup.LastMyGoals – @Cup.LastOppGoals</p>
+                        @if (!string.IsNullOrEmpty(Cup.LastScorers))
+                        {
+                            <p class="text-[11px] text-white/45 mt-0.5">⚽ @Cup.LastScorers</p>
+                        }
+                        @if (!string.IsNullOrEmpty(Cup.LastReport))
+                        {
+                            <p class="text-[11px] text-white/65 mt-1" style="font-style:italic;">@Cup.LastReport</p>
+                        }
+                    </div>
+                }
+
+                <button class="t38-cta text-lg w-full py-4 t38-tap" data-testid="play-draftcup"
+                        @onclick="@(() => MetaplayService.PlayDraftCupRound())">▶ PLAY @DraftCup.RoundName(Cup.RoundIndex).ToUpperInvariant()</button>
+
+                @RewardLadder(showProgress: true)
+            }
+        </div>
+    </div>
+}
+
+@if (_showPacks)
+{
+    <PacksHub OnClose="@(() => _showPacks = false)" />
+}
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private bool _showPacks;
+    private DraftBoosts Boosts => Player!.Boosts;
+    private string BoostText => Boosts.Any
+        ? $"Ready: 🎲 {Boosts.Rerolls} rerolls · ⭐ {Boosts.EliteSpins} elite spins"
+        : "Get rerolls + elite spins for this draft";
+
+    private PlayerModel? Player => MetaplayService.PlayerModel;
+    private SharedGameConfig? Config => Player?.GameConfig;
+    private GlobalConfig Global => Config!.Global;
+    private DraftCupRun Cup => Player!.DraftCup;
+    private DraftedSquad Draft => Player!.Draft;
+
+    private bool _inDraft;
+
+    private bool DraftComplete =>
+        Config != null && Draft.HasFormation
+        && Config.Formations.TryGetValue(Draft.Formation, out FormationInfo? f) && Draft.IsComplete(f!);
+
+    private int MyOvr
+    {
+        get
+        {
+            if (Player == null) return 0;
+            LineRatings r = Player.ResolveDraftRatings();
+            return System.Math.Clamp((r.Attack * 3 + r.Midfield * 3 + r.Defence * 3 + r.Goalkeeping) / 10, 0, 99);
+        }
+    }
+
+    private int OppOvr => Global.DraftCupOpponentBaseOvr + Cup.RoundIndex * Global.DraftCupOpponentOvrPerRound;
+
+    private long Coins => Player?.Wallet.Get(CurrencyType.Coins) ?? 0;
+    private long Gems  => Player?.Wallet.Get(CurrencyType.Gems) ?? 0;
+
+    private bool CanAfford(bool premium) => premium ? Gems >= Global.DraftCupEntryGems : Coins >= Global.DraftCupEntryCoins;
+
+    private void Enter(bool premium)
+    {
+        if (!CanAfford(premium)) { MetaplayService.RequestShop(); return; }
+        MetaplayService.EnterDraftCup(premium);
+        _inDraft = true; // jump straight into drafting the one-off XI
+    }
+
+    private int RewardPct => Cup.Premium ? 100 + Global.DraftCupPremiumBonusPct : 100;
+
+    private RenderFragment RewardLadder(bool showProgress) => @<div class="t38-card px-4 py-3 mt-1">
+        <span class="t38-label text-[10px] text-white/45">Reward ladder@(Cup.Premium && showProgress ? " · ⭐ +" + Global.DraftCupPremiumBonusPct + "%" : "")</span>
+        <div class="flex flex-col gap-1 mt-1">
+            @for (int i = 0; i < Global.DraftCupRoundRewards.Length; i++)
+            {
+                BracketRoundReward rw = Global.DraftCupRoundRewards[i];
+                bool won = showProgress && i <= Cup.BestRoundReached;
+                bool nextUp = showProgress && Cup.State == DraftCupState.Active && i == Cup.RoundIndex;
+                int pct = showProgress ? RewardPct : 100;
+                <div class="flex items-center justify-between text-[11px] px-2 py-1 rounded"
+                     style="@(won ? "background:rgba(52,211,154,0.14);color:var(--t38-emerald);" : nextUp ? "background:rgba(233,185,73,0.14);color:var(--t38-amber);" : "color:rgba(255,255,255,0.6);")">
+                    <span>@(won ? "✓ " : nextUp ? "▶ " : "")@DraftCup.RoundName(i)</span>
+                    <span style="font-weight:700;">🪙@(rw.Coins * pct / 100) · 💎@(rw.Gems * pct / 100) · 🔷@(rw.Shards * pct / 100)</span>
+                </div>
+            }
+        </div>
+    </div>;
+
+    private System.Timers.Timer? _repaint;
+
+    protected override void OnInitialized()
+    {
+        MetaplayService.OnStateChanged += OnStateChanged;
+        _repaint = new System.Timers.Timer(350) { AutoReset = true };
+        _repaint.Elapsed += (_, _) => InvokeAsync(StateHasChanged);
+        _repaint.Start();
+    }
+
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        MetaplayService.OnStateChanged -= OnStateChanged;
+        _repaint?.Stop();
+        _repaint?.Dispose();
+    }
+}

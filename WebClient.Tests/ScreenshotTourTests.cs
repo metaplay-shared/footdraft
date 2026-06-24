@@ -199,4 +199,142 @@ public class ScreenshotTourTests : PageTest
             await ctxB.CloseAsync();
         }
     }
+
+    /// <summary>
+    /// Draft Cup (FUT-Draft-style paid mode), full run: home entry → cup entry (tiers + ladder) → draft a one-off
+    /// XI → play the knockout → champion/eliminated. Screenshots every stage so the whole loop is demonstrated.
+    /// </summary>
+    [Test]
+    public async Task DraftCupFullRun()
+    {
+        await Page.GotoAsync(BaseUrl, new() { Timeout = 60000, WaitUntil = WaitUntilState.DOMContentLoaded });
+        await Expect(Page.GetByTestId("draft-cup")).ToBeVisibleAsync(new() { Timeout = 60000 });
+        await ShotAsync("30-menu-with-cup");
+
+        await Page.GetByTestId("draft-cup").ClickAsync();
+        await Expect(Page.GetByTestId("enter-standard")).ToBeVisibleAsync(new() { Timeout = 25000 });
+        await Page.WaitForTimeoutAsync(400);
+        await ShotAsync("31-draftcup-entry");
+
+        // Enter the standard tier → the spin-draft opens (reused DraftHub).
+        await Page.GetByTestId("enter-standard").ClickAsync();
+        await Expect(Page.GetByRole(AriaRole.Heading, new() { Name = "DRAFT YOUR XI" })).ToBeVisibleAsync(new() { Timeout = 25000 });
+        await Page.GetByText("4-3-3").First.ClickAsync(); // formation
+
+        // Spin + pick until the XI is complete (handle no-candidate rerolls defensively).
+        for (int i = 0; i < 70 && await DraftedCountAsync() < 11; i++)
+        {
+            if (await Page.GetByTestId("candidate").First.IsVisibleAsync())
+                await Page.GetByTestId("candidate").First.ClickAsync();
+            else if (await Page.GetByTestId("spin-btn").IsVisibleAsync())
+                await Page.GetByTestId("spin-btn").ClickAsync();
+            else if (await Page.GetByText("REROLL").First.IsVisibleAsync())
+                await Page.GetByText("REROLL").First.ClickAsync();
+            await Page.WaitForTimeoutAsync(300);
+        }
+        await ShotAsync("32-draftcup-xi-complete");
+
+        // Done → back to the cup; the "play round" button should be ready.
+        await Page.GetByText("DONE").First.ClickAsync();
+        await Expect(Page.GetByTestId("play-draftcup")).ToBeVisibleAsync(new() { Timeout = 15000 });
+        await ShotAsync("33-draftcup-ready");
+
+        // Play rounds until champion or eliminated (the entry tiles reappear when the run ends).
+        for (int r = 0; r < 4; r++) // DraftCup.RoundsTotal
+        {
+            if (!await Page.GetByTestId("play-draftcup").IsVisibleAsync()) break;
+            await Page.GetByTestId("play-draftcup").ClickAsync();
+            await Page.WaitForTimeoutAsync(900);
+            await ShotAsync($"34-draftcup-round{r + 1}");
+            if (await Page.GetByTestId("enter-standard").IsVisibleAsync()) break; // run ended (champion/eliminated)
+        }
+        await ShotAsync("35-draftcup-final");
+    }
+
+    /// <summary>
+    /// New live-service surfaces (this session): World Cup hub + leaderboard, the manager profile (career /
+    /// objectives / My Club + Looks locker), and Scout Packs with the reveal. Single solo context.
+    /// </summary>
+    [Test]
+    public async Task TourNewFeatures()
+    {
+        await Page.GotoAsync(BaseUrl, new() { Timeout = 60000, WaitUntil = WaitUntilState.DOMContentLoaded });
+        await Expect(Page.GetByTestId("world-cup")).ToBeVisibleAsync(new() { Timeout = 60000 });
+
+        // ---- World Cup hub: entry screen (leaderboard card + reward ladder) ----
+        await Page.GetByTestId("world-cup").ClickAsync();
+        await Expect(Page.GetByTestId("worldcup-panel")).ToBeVisibleAsync(new() { Timeout = 25000 });
+        await Expect(Page.GetByTestId("wc-leaderboard")).ToBeVisibleAsync(new() { Timeout = 10000 });
+        await ShotAsync("40-worldcup-entry");
+
+        // Scout Pack opened from the cup entry (pre-draft boosts: rerolls + elite spins + coins).
+        await Page.GetByTestId("open-scout").ClickAsync();
+        await Expect(Page.GetByTestId("packs-panel")).ToBeVisibleAsync(new() { Timeout = 15000 });
+        await ShotAsync("48-packs");
+        await Page.GetByTestId("open-pack").First.ClickAsync(); // free daily
+        await Expect(Page.GetByTestId("pack-reveal")).ToBeVisibleAsync(new() { Timeout = 10000 });
+        await Page.WaitForTimeoutAsync(800);
+        await ShotAsync("49-pack-reveal");
+        await Page.GetByTestId("dismiss-reveal").ClickAsync();
+        await Page.GetByText("✕ CLOSE").Last.ClickAsync(); // close packs → back to WC entry
+        await Expect(Page.GetByTestId("worldcup-panel")).ToBeVisibleAsync(new() { Timeout = 10000 });
+
+        // Enter → draft a WC XI (nation-bucketed spin), bounded loop; then the knockout (bracket strip + report).
+        try
+        {
+            await Page.GetByTestId("enter-wc-standard").ClickAsync();
+            await Expect(Page.GetByRole(AriaRole.Heading, new() { Name = "DRAFT YOUR XI" })).ToBeVisibleAsync(new() { Timeout = 25000 });
+            await Page.GetByText("4-3-3").First.ClickAsync();
+            await ShotAsync("41-worldcup-draft");
+            for (int i = 0; i < 80 && await DraftedCountAsync() < 11; i++)
+            {
+                if (await Page.GetByTestId("candidate").First.IsVisibleAsync())
+                    await Page.GetByTestId("candidate").First.ClickAsync();
+                else if (await Page.GetByTestId("spin-btn").IsVisibleAsync())
+                    await Page.GetByTestId("spin-btn").ClickAsync();
+                else if (await Page.GetByText("REROLL").First.IsVisibleAsync())
+                    await Page.GetByText("REROLL").First.ClickAsync();
+                await Page.WaitForTimeoutAsync(250);
+            }
+            if (await Page.GetByText("DONE").First.IsVisibleAsync())
+                await Page.GetByText("DONE").First.ClickAsync();
+            if (await Page.GetByTestId("play-worldcup").IsVisibleAsync())
+            {
+                await ShotAsync("42-worldcup-ready");          // bracket strip + opponent nation card
+                await Page.GetByTestId("play-worldcup").ClickAsync();
+                await Page.WaitForTimeoutAsync(900);
+                await ShotAsync("43-worldcup-round");          // result card with the match report
+            }
+        }
+        catch (Exception ex) { TestContext.Out.WriteLine("WC run partial: " + ex.Message); }
+
+        // ---- Manager profile: career / objectives / my club + Looks locker ----
+        await Page.GotoAsync(BaseUrl, new() { Timeout = 60000, WaitUntil = WaitUntilState.DOMContentLoaded });
+        await Expect(Page.GetByTestId("open-profile")).ToBeVisibleAsync(new() { Timeout = 30000 });
+        await Page.GetByTestId("open-profile").ClickAsync();
+        await Expect(Page.GetByTestId("profile-panel")).ToBeVisibleAsync(new() { Timeout = 15000 });
+        await ShotAsync("44-profile-career");
+        await Page.GetByTestId("tab-objectives").ClickAsync();
+        await Page.WaitForTimeoutAsync(300);
+        await ShotAsync("45-profile-objectives");
+        await Page.GetByTestId("tab-club").ClickAsync();
+        await Page.WaitForTimeoutAsync(300);
+        await ShotAsync("46-profile-myclub");
+        await Page.GetByTestId("open-looks").ClickAsync();
+        await Page.WaitForTimeoutAsync(400);
+        await ShotAsync("47-looks-locker");
+    }
+
+    private async Task<int> DraftedCountAsync()
+    {
+        try
+        {
+            var loc = Page.GetByTestId("drafted-count");
+            if (!await loc.IsVisibleAsync()) return 0;
+            string t = await loc.InnerTextAsync(); // e.g. "7 / 11 drafted"
+            var m = System.Text.RegularExpressions.Regex.Match(t, @"(\d+)\s*/\s*11");
+            return m.Success ? int.Parse(m.Groups[1].Value) : 0;
+        }
+        catch { return 0; }
+    }
 }

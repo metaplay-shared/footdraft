@@ -102,6 +102,55 @@ namespace Game.Logic
         [MetaMember(29)] public bool                  TransferWindowOpen { get; set; }
         /// <summary> The viewing manager's remaining transfer budget (Coins); 0 for spectators/bots. </summary>
         [MetaMember(30)] public long                  MyTransferBudget   { get; set; }
+
+        // ---- Squad-building rules (per-league hard-mode + draft constraints) ----
+        /// <summary> Hard mode: hide player OVR ratings in the draft + roster UI for this league. </summary>
+        [MetaMember(31)] public bool                  HideRatings        { get; set; }
+        /// <summary> Browsable season results (most recent fixtures, all members) with named scorers — "view past results". </summary>
+        [MetaMember(32)] public List<LeagueResultLine> SeasonResults     { get; set; } = new List<LeagueResultLine>();
+        /// <summary> Rule: no two players from the same club in one XI (chosen at creation). </summary>
+        [MetaMember(33)] public bool                  NoSameClub         { get; set; }
+        /// <summary> Rule: enforce the OVR-band squad caps (chosen at creation). [legacy — superseded by CapBands] </summary>
+        [MetaMember(34)] public bool                  SquadCaps          { get; set; }
+        /// <summary> Max players allowed from one club (0 = no limit; 1 = one-per-club). Supersedes NoSameClub. </summary>
+        [MetaMember(35)] public int                   MaxPerClub         { get; set; }
+        /// <summary> Chosen OVR-cap-bands string ("90:2,80:3,75:4"); "" = no caps. Supersedes SquadCaps. </summary>
+        [MetaMember(36)] public string                CapBands           { get; set; } = "";
+        /// <summary> Pin-draft House Rule ("era:E2010s,elite:1"); "" = no pin (see <see cref="LeaguePin"/>). </summary>
+        [MetaMember(37)] public string                DraftPin           { get; set; } = "";
+        /// <summary> The viewing manager's pending P2P trade offers (incoming to accept/reject + outgoing to cancel). </summary>
+        [MetaMember(38)] public List<TradeOfferView>  MyTradeOffers      { get; set; } = new List<TradeOfferView>();
+        /// <summary> Other HUMAN managers' rosters (legend ids; client resolves names) — the trade-proposal picker. </summary>
+        [MetaMember(39)] public List<LeagueRosterView> TradeRosters      { get; set; } = new List<LeagueRosterView>();
+    }
+
+    /// <summary> Another manager's roster as legend ids (the client resolves names/OVR/position), for the trade picker. </summary>
+    [MetaSerializable]
+    public class LeagueRosterView
+    {
+        [MetaMember(1)] public int          MemberIndex { get; set; }
+        [MetaMember(2)] public string       Name        { get; set; } = "";
+        [MetaMember(3)] public List<string> LegendIds   { get; set; } = new List<string>();
+    }
+
+    /// <summary>
+    /// A pending P2P trade as shown to one viewing manager. Fields are from the PROPOSER's perspective:
+    /// the proposer gives <see cref="GiveName"/> (+ <see cref="Coins"/>) for the other manager's <see cref="GetName"/>.
+    /// <see cref="Incoming"/> = the viewer is the recipient (can accept/reject); else it's the viewer's own offer (cancel).
+    /// </summary>
+    [MetaSerializable]
+    public class TradeOfferView
+    {
+        [MetaMember(1)]  public int      OfferId   { get; set; }
+        [MetaMember(2)]  public bool     Incoming  { get; set; }
+        [MetaMember(3)]  public string   OtherName { get; set; } = ""; // the other manager in the trade
+        [MetaMember(4)]  public string   GiveName  { get; set; } = "";
+        [MetaMember(5)]  public int      GiveOvr   { get; set; }
+        [MetaMember(6)]  public Position GivePos   { get; set; }
+        [MetaMember(7)]  public string   GetName   { get; set; } = "";
+        [MetaMember(8)]  public int      GetOvr    { get; set; }
+        [MetaMember(9)]  public Position GetPos    { get; set; }
+        [MetaMember(10)] public int      Coins     { get; set; } // proposer adds this much cash to the deal
     }
 
     /// <summary> One player in a spun squad, with draft-availability flags for the picking manager. </summary>
@@ -135,6 +184,22 @@ namespace Game.Logic
         [MetaMember(3)] public int    MyGoals      { get; set; }
         [MetaMember(4)] public int    OppGoals     { get; set; }
         [MetaMember(5)] public int    Outcome      { get; set; } // 1 win, 0 draw, -1 loss
+        /// <summary> The fixture's named goals (scorer + assister), for the cinematic + full-time detail. </summary>
+        [MetaMember(6)] public List<MatchGoalDetail> Goals { get; set; } = new List<MatchGoalDetail>();
+        /// <summary> A flavour "match report" headline for this fixture (shown at full-time). </summary>
+        [MetaMember(7)] public string Report { get; set; } = "";
+    }
+
+    /// <summary> One row in the browsable season results history (scoreline + named scorers), shown to all members. </summary>
+    [MetaSerializable]
+    public class LeagueResultLine
+    {
+        [MetaMember(1)] public int    Matchday  { get; set; }
+        [MetaMember(2)] public string HomeName  { get; set; } = "";
+        [MetaMember(3)] public string AwayName  { get; set; } = "";
+        [MetaMember(4)] public int    HomeGoals { get; set; }
+        [MetaMember(5)] public int    AwayGoals { get; set; }
+        [MetaMember(6)] public List<MatchGoalDetail> Goals { get; set; } = new List<MatchGoalDetail>();
     }
 
     /// <summary> A manager's cached league membership + latest standings snapshot. </summary>

@@ -1,0 +1,157 @@
+@using System.Collections.Generic
+@using System.Linq
+@using Game.Logic
+@using Metaplay.Core
+@using WebClientBase.Services
+@inject MetaplayClientService MetaplayService
+@implements IDisposable
+
+@* FOOTDRAFT Scout Packs: open BEFORE a draft for a draft edge. A pack grants coins + draft-boost consumables —
+   extra rerolls and guaranteed "elite" spins — that apply to your next World Cup / Draft Cup spin-draft. A free
+   daily pack drives retention; Gem tiers are the sink. Opening is client-predicted (instant reveal). *@
+
+<div class="t38-bg fixed inset-0 z-[46] overflow-y-auto t38-under-hud" data-testid="packs-panel"
+     style="padding: calc(1rem + env(safe-area-inset-top)) 1rem calc(7rem + env(safe-area-inset-bottom));">
+    <div class="w-full mx-auto flex flex-col gap-3" style="max-width: 30rem;">
+
+        @if (Player == null || Config == null)
+        {
+            <p class="text-center text-white/50 mt-10">Loading…</p>
+        }
+        else
+        {
+            <div class="flex items-center justify-between">
+                <h1 class="t38-display text-2xl text-white">📦 SCOUT PACKS</h1>
+                <button class="text-xs px-3 py-1.5 rounded-xl" style="background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.6);"
+                        @onclick="OnClose">✕ CLOSE</button>
+            </div>
+            <p class="text-xs text-white/45 -mt-1">Open a pack for a draft edge, then enter a World Cup or Draft Cup. Boosts apply to that draft.</p>
+
+            @* Current boosts the manager is carrying into their next draft. *@
+            <div class="t38-card px-4 py-2.5 flex items-center justify-center gap-5" data-testid="my-boosts">
+                <div class="flex items-center gap-1.5"><span class="text-lg">🎲</span><span class="t38-display text-lg text-white">@Boosts.Rerolls</span><span class="t38-label text-[9px] text-white/45">REROLLS</span></div>
+                <div class="flex items-center gap-1.5"><span class="text-lg">⭐</span><span class="t38-display text-lg text-white">@Boosts.EliteSpins</span><span class="t38-label text-[9px] text-white/45">ELITE SPINS</span></div>
+            </div>
+
+            @foreach (PackDef pack in Config.Global.Packs)
+            {
+                bool free = pack.IsFreeDaily;
+                bool freeReady = free && DailyAvailable;
+                bool canAfford = free ? freeReady : Gems >= pack.GemCost;
+                <div class="t38-card px-4 py-3 flex items-center gap-3 @(free ? "t38-turn" : "")" data-testid="pack-tile">
+                    <span class="text-3xl">@pack.Icon</span>
+                    <div class="flex-1 min-w-0">
+                        <div class="text-white" style="font-weight:800;">@pack.Name</div>
+                        <div class="text-[10px] text-white/45 mt-0.5">@PackBlurb(pack)</div>
+                    </div>
+                    @if (free)
+                    {
+                        <button class="t38-cta text-sm px-4 py-2 t38-tap" disabled="@(!freeReady)" data-testid="open-pack"
+                                @onclick="@(() => Open(pack))">@(freeReady ? "FREE" : "TOMORROW")</button>
+                    }
+                    else
+                    {
+                        <button class="t38-marquee-btn text-sm px-4 py-2 t38-tap" style="border-radius:0.75rem;@(canAfford ? "" : "filter:grayscale(0.3) brightness(0.85);")" data-testid="open-pack"
+                                @onclick="@(() => Open(pack))">💎 @pack.GemCost</button>
+                    }
+                </div>
+            }
+
+            <p class="text-[10px] text-white/30 text-center mt-1">Packs give a draft edge + coins — never permanent players. Every XI is still drafted fresh.</p>
+        }
+    </div>
+</div>
+
+@* ---------- Reveal overlay ---------- *@
+@if (_reveal != null)
+{
+    <div class="t38-bg fixed inset-0 z-[80] flex flex-col items-center justify-center px-6 text-center" data-testid="pack-reveal"
+         @onclick="DismissReveal">
+        <span class="t38-label text-[10px] text-white/45 t38-reveal">@_revealPackName opened</span>
+        <div class="text-6xl my-3 fd-victory-pop">@_revealIcon</div>
+
+        <div class="flex items-center justify-center gap-5 mt-1 t38-reveal" style="animation-delay:.15s;">
+            @if (_reveal.Coins > 0)      { <div class="flex flex-col items-center"><span class="t38-display text-2xl" style="color:var(--t38-amber);">+@_reveal.Coins</span><span class="t38-label text-[8px] text-white/40">🪙 COINS</span></div> }
+            @if (_reveal.Rerolls > 0)    { <div class="flex flex-col items-center"><span class="t38-display text-2xl text-white">+@_reveal.Rerolls</span><span class="t38-label text-[8px] text-white/40">🎲 REROLLS</span></div> }
+            @if (_reveal.EliteSpins > 0) { <div class="flex flex-col items-center"><span class="t38-display text-2xl" style="color:#ffd23f;">+@_reveal.EliteSpins</span><span class="t38-label text-[8px] text-white/40">⭐ ELITE SPINS</span></div> }
+        </div>
+
+        <p class="text-[11px] text-white/45 mt-4 t38-reveal" style="animation-delay:.4s;max-width:18rem;">Boosts ready — use them in your next World Cup or Draft Cup draft.</p>
+
+        <button class="t38-cta text-base px-12 py-3 mt-6 t38-tap" data-testid="dismiss-reveal"
+                @onclick="DismissReveal" @onclick:stopPropagation="true">CONTINUE →</button>
+        <span class="t38-label text-[9px] text-white/30 mt-2">tap to continue</span>
+    </div>
+}
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private PlayerModel? Player => MetaplayService.PlayerModel;
+    private SharedGameConfig? Config => Player?.GameConfig;
+    private DraftBoosts Boosts => Player!.Boosts;
+    private long Gems => Player?.Wallet.Get(CurrencyType.Gems) ?? 0;
+
+    private bool DailyAvailable =>
+        Player != null && Player.Packs.LastFreePackDay != QuestEngine.DayOf(Player.CurrentTime);
+
+    private int _seenOpenCount = -1;
+    private PackReward? _reveal;
+    private string _revealPackName = "";
+    private string _revealIcon = "📦";
+
+    private void Open(PackDef pack)
+    {
+        if (pack.IsFreeDaily)
+        {
+            if (!DailyAvailable) return;
+        }
+        else if (Gems < pack.GemCost)
+        {
+            MetaplayService.RequestShop(); // not enough Gems → open the gem store
+            return;
+        }
+        MetaplayService.OpenPack(pack.Id);
+    }
+
+    private string PackBlurb(PackDef p)
+    {
+        List<string> parts = new List<string> { $"🪙 {p.CoinsMin}–{p.CoinsMax}" };
+        if (p.Rerolls > 0)    parts.Add($"🎲 {p.Rerolls} reroll{(p.Rerolls == 1 ? "" : "s")}");
+        if (p.EliteSpins > 0) parts.Add($"⭐ {p.EliteSpins} elite spin{(p.EliteSpins == 1 ? "" : "s")}");
+        return string.Join(" · ", parts);
+    }
+
+    private void DismissReveal() { _reveal = null; InvokeAsync(StateHasChanged); }
+
+    private System.Timers.Timer? _repaint;
+
+    protected override void OnInitialized()
+    {
+        MetaplayService.OnStateChanged += OnStateChanged;
+        if (Player != null) _seenOpenCount = Player.Packs.OpenedCount;
+        _repaint = new System.Timers.Timer(250) { AutoReset = true };
+        _repaint.Elapsed += (_, _) => InvokeAsync(StateHasChanged);
+        _repaint.Start();
+    }
+
+    private void OnStateChanged()
+    {
+        if (Player != null && Player.Packs.OpenedCount > _seenOpenCount && Player.Packs.LastReward != null)
+        {
+            _seenOpenCount = Player.Packs.OpenedCount;
+            _reveal = Player.Packs.LastReward;
+            PackDef? def = Config?.Global.Packs.FirstOrDefault(p => p.Id == Player.Packs.LastPackId);
+            _revealPackName = def?.Name ?? "Pack";
+            _revealIcon = def?.Icon ?? "📦";
+        }
+        InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        MetaplayService.OnStateChanged -= OnStateChanged;
+        _repaint?.Stop();
+        _repaint?.Dispose();
+    }
+}

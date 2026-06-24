@@ -26,6 +26,25 @@ namespace Game.Logic
         }
     }
 
+    /// <summary> A goal with its named scorer + (optional) assister — the match "details" testers asked for. </summary>
+    [MetaSerializable]
+    public class MatchGoalDetail
+    {
+        [MetaMember(1)] public int    Minute   { get; private set; }
+        [MetaMember(2)] public bool   HomeSide { get; private set; } // scored by the fixture's home side
+        [MetaMember(3)] public string Scorer   { get; private set; } = "";
+        [MetaMember(4)] public string Assist   { get; private set; } = ""; // "" = unassisted
+
+        public MatchGoalDetail() { }
+        public MatchGoalDetail(int minute, bool homeSide, string scorer, string assist)
+        {
+            Minute   = minute;
+            HomeSide = homeSide;
+            Scorer   = scorer ?? "";
+            Assist   = assist ?? "";
+        }
+    }
+
     /// <summary> A resolved match: the timed goals and the final score. "Home" = the first side passed to the sim. </summary>
     [MetaSerializable]
     public class MatchResult
@@ -120,6 +139,69 @@ namespace Game.Logic
             int jitter     = rng.NextInt(9) - 4;
             int minute     = baseMinute + jitter;
             return minute < 1 ? 1 : (minute > 90 ? 90 : minute);
+        }
+
+        /// <summary>
+        /// Assigns a named scorer + (usually) an assister to each goal in <paramref name="result"/>, drawn from the
+        /// scoring side's squad weighted by position (forwards score most, keepers never). Deterministic but uses
+        /// its OWN seeded RandomPCG (derived from the match seed) so it never perturbs Resolve's draw order, while
+        /// the server + every client still reproduce identical scorers. A squad entry is (name, position, ovr).
+        /// </summary>
+        public static List<MatchGoalDetail> AttributeScorers(MatchResult result,
+            IReadOnlyList<(string Name, Position Pos, int Ovr)> homeSquad,
+            IReadOnlyList<(string Name, Position Pos, int Ovr)> awaySquad,
+            ulong seed)
+        {
+            RandomPCG rng = RandomPCG.CreateFromSeed(seed ^ 0x90F1A2B3C4D5E6F7ul);
+            List<MatchGoalDetail> details = new List<MatchGoalDetail>();
+            if (result?.Goals == null)
+                return details;
+            foreach (GoalEvent g in result.Goals)
+            {
+                IReadOnlyList<(string Name, Position Pos, int Ovr)> squad = g.HomeScored ? homeSquad : awaySquad;
+                string scorer = PickWeighted(rng, squad, ScorerWeight, excludeName: null);
+                // ~1 in 4 goals is unassisted (solo runs, penalties, rebounds) — roll BEFORE the assist draw so the order is fixed.
+                bool unassisted = rng.NextInt(100) < 25;
+                string assist = unassisted ? "" : PickWeighted(rng, squad, AssistWeight, excludeName: scorer);
+                details.Add(new MatchGoalDetail(g.Minute, g.HomeScored, scorer, assist));
+            }
+            return details;
+        }
+
+        static int ScorerWeight((string Name, Position Pos, int Ovr) p)
+        {
+            int posW = p.Pos switch { Position.FWD => 6, Position.MID => 3, Position.DEF => 1, _ => 0 };
+            return posW * System.Math.Max(1, p.Ovr - 55);
+        }
+
+        static int AssistWeight((string Name, Position Pos, int Ovr) p)
+        {
+            int posW = p.Pos switch { Position.MID => 5, Position.FWD => 4, Position.DEF => 2, _ => 0 };
+            return posW * System.Math.Max(1, p.Ovr - 55);
+        }
+
+        static string PickWeighted(RandomPCG rng, IReadOnlyList<(string Name, Position Pos, int Ovr)> squad,
+            System.Func<(string Name, Position Pos, int Ovr), int> weight, string excludeName)
+        {
+            int total = 0;
+            foreach ((string Name, Position Pos, int Ovr) p in squad)
+                if (p.Name != excludeName) total += weight(p);
+            if (total <= 0)
+            {
+                foreach ((string Name, Position Pos, int Ovr) p in squad)
+                    if (p.Name != excludeName) return p.Name; // fallback: any other player
+                return "";
+            }
+            int roll = rng.NextInt(total);
+            foreach ((string Name, Position Pos, int Ovr) p in squad)
+            {
+                if (p.Name == excludeName) continue;
+                int w = weight(p);
+                if (w <= 0) continue;
+                if (roll < w) return p.Name;
+                roll -= w;
+            }
+            return "";
         }
     }
 }

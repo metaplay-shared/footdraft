@@ -161,6 +161,18 @@ namespace Game.Server
             public Member(EntityId id, string name, string crest, bool isBot = false) { Id = id; Name = name; Crest = crest; IsBot = isBot; }
         }
 
+        /// <summary> A pending P2P trade: proposer (FromIndex) gives a player + Coins for the target's (ToIndex) player. </summary>
+        sealed class TradeOffer
+        {
+            public int      OfferId;
+            public int      FromIndex;
+            public int      ToIndex;
+            public string   GiveLegendId;
+            public string   GetLegendId;
+            public int      Coins;
+            public MetaTime ExpiresAt;
+        }
+
         sealed class LeagueReg
         {
             public string                     Code;
@@ -190,6 +202,16 @@ namespace Game.Server
 
             // Admin transfer-window override: 0 = follow the daily schedule, 1 = force open, 2 = force closed.
             public int                  TransferWindowOverride;
+
+            // Squad-building rules, chosen at creation: hard mode (hide ratings), max players per club, OVR caps.
+            public bool                 HideRatings;
+            public int                  MaxPerClub = 1;                 // 0 = no club limit, 1 = one-per-club, N = max N
+            public string               CapBands   = "90:2,80:3,75:4";  // "" = no caps
+            public string               DraftPin   = "";                // pin-draft filter ("era:E2010s,elite:1"); "" = none
+
+            // ---- P2P trades (pending offers between two managers; cash escrowed from the proposer). ----
+            public readonly List<TradeOffer> TradeOffers = new List<TradeOffer>();
+            public int                       NextTradeOfferId;
 
             public LeagueReg(string code, string name, EntityId commissioner)
             {
@@ -272,8 +294,20 @@ namespace Game.Server
                     NextSimTime            = pl.NextSimTime,
                     LastMatchdayNumber     = pl.LastMatchdayNumber,
                     TransferWindowOverride = pl.TransferWindowOverride,
+                    HideRatings            = pl.HideRatings,
+                    MaxPerClub             = pl.MaxPerClub > 0 ? pl.MaxPerClub : (pl.NoSameClub ? 1 : 0),
+                    CapBands               = !string.IsNullOrEmpty(pl.CapBands) ? pl.CapBands : (pl.SquadCaps ? DefaultDef().OvrCapBands : ""),
+                    DraftPin               = pl.DraftPin ?? "",
                 };
                 reg.LastMatchdayLines.AddRange(pl.LastMatchdayLines);
+                reg.NextTradeOfferId = pl.NextTradeOfferId;
+                if (pl.TradeOffers != null)
+                    foreach (PersistedTradeOffer t in pl.TradeOffers)
+                        reg.TradeOffers.Add(new TradeOffer
+                        {
+                            OfferId = t.OfferId, FromIndex = t.FromIndex, ToIndex = t.ToIndex,
+                            GiveLegendId = t.GiveLegendId, GetLegendId = t.GetLegendId, Coins = t.Coins, ExpiresAt = t.ExpiresAt,
+                        });
                 for (int i = 0; i < pl.Members.Count; i++)
                 {
                     PersistedLeagueMember pm = pl.Members[i];
@@ -326,7 +360,20 @@ namespace Game.Server
                     NextSimTime            = reg.NextSimTime,
                     LastMatchdayNumber     = reg.LastMatchdayNumber,
                     TransferWindowOverride = reg.TransferWindowOverride,
+                    HideRatings            = reg.HideRatings,
+                    MaxPerClub             = reg.MaxPerClub,
+                    CapBands               = reg.CapBands,
+                    NoSameClub             = reg.MaxPerClub >= 1,
+                    SquadCaps              = !string.IsNullOrEmpty(reg.CapBands),
+                    DraftPin               = reg.DraftPin ?? "",
+                    NextTradeOfferId       = reg.NextTradeOfferId,
                 };
+                foreach (TradeOffer t in reg.TradeOffers)
+                    pl.TradeOffers.Add(new PersistedTradeOffer
+                    {
+                        OfferId = t.OfferId, FromIndex = t.FromIndex, ToIndex = t.ToIndex,
+                        GiveLegendId = t.GiveLegendId, GetLegendId = t.GetLegendId, Coins = t.Coins, ExpiresAt = t.ExpiresAt,
+                    });
                 pl.LastMatchdayLines.AddRange(reg.LastMatchdayLines);
                 for (int i = 0; i < reg.Members.Count; i++)
                 {
@@ -385,6 +432,10 @@ namespace Game.Server
                 return new LeagueOpResponse("That code is taken — try another", null);
 
             LeagueReg reg = new LeagueReg(request.Code.Trim().ToUpperInvariant(), (request.LeagueName ?? "").Trim(), playerId);
+            reg.HideRatings = request.HideRatings; // squad-building rules, chosen on the create screen
+            reg.MaxPerClub  = request.MaxPerClub;
+            reg.CapBands    = request.CapBands ?? "";
+            reg.DraftPin    = request.DraftPin ?? "";
             reg.Members.Add(new Member(playerId, request.PlayerName, request.Crest ?? "⚽"));
             _leagues[key] = reg;
 
@@ -497,6 +548,32 @@ namespace Game.Server
             return new LeagueOpResponse("", Snapshot(reg, playerId));
         }
 
+        /// <summary>
+        /// The spin pool for a league's pin-draft House Rule: <see cref="SeasonKeys"/> filtered by era and/or
+        /// elite clubs. Falls back to the full pool if the filter would leave nothing (config/data safety).
+        /// </summary>
+        List<string> PoolForPin(string pin)
+        {
+            (string era, bool elite) = LeaguePin.Parse(pin);
+            if (string.IsNullOrEmpty(era) && !elite)
+                return SeasonKeys;
+            HashSet<string> eliteSet = elite ? new HashSet<string>(EliteSeasonKeys(DefaultDef().EliteSpinMinAvgOvr)) : null;
+            List<string> keys = new List<string>();
+            foreach (string key in SeasonKeys)
+            {
+                if (!string.IsNullOrEmpty(era))
+                {
+                    List<LegendPlayer> squad = SeasonSquads[key];
+                    if (squad.Count == 0 || squad[0].Era.ToString() != era)
+                        continue;
+                }
+                if (eliteSet != null && !eliteSet.Contains(key))
+                    continue;
+                keys.Add(key);
+            }
+            return keys.Count > 0 ? keys : SeasonKeys;
+        }
+
         /// <summary> Spin the wheel: roll a random Club × Season squad for the current drafter to pick a player from. </summary>
         [EntityAskHandler]
         public LeagueOpResponse HandleLeagueSpinRequest(EntityId playerId, LeagueSpinRequest request)
@@ -518,12 +595,18 @@ namespace Game.Server
 
             // Elite spin (Gem-paid, charged by the PlayerAction): restrict the roll to top-tier club-seasons.
             // Fall back to the full pool if the config threshold leaves the filter empty (config safety).
-            List<string> pool = SeasonKeys;
+            // Base pool respects the league's pin-draft rule (era / elite-clubs); a Gem-paid elite spin then
+            // narrows to elite club-seasons within that pinned pool.
+            List<string> pool = PoolForPin(reg.DraftPin);
             if (request.Elite)
             {
-                List<string> elite = EliteSeasonKeys(DefaultDef().EliteSpinMinAvgOvr);
-                if (elite.Count > 0)
-                    pool = elite;
+                HashSet<string> elite = new HashSet<string>(EliteSeasonKeys(DefaultDef().EliteSpinMinAvgOvr));
+                List<string> filtered = new List<string>();
+                foreach (string k in pool)
+                    if (elite.Contains(k))
+                        filtered.Add(k);
+                if (filtered.Count > 0)
+                    pool = filtered;
             }
 
             // Server-rolled (cheat-proof) random squad.
@@ -565,6 +648,10 @@ namespace Game.Server
             FormationInfo formation = FormationInfoById(reg.FormationValueFor(myIndex));
             if (LeagueDraftEngine.NextOpenSlotForPosition(formation, reg.RosterFor(myIndex), legend.Position) < 0)
                 return new LeagueOpResponse($"Your formation has no open {legend.Position} slot", null);
+
+            string ruleErr = LeagueDraftEngine.SquadRuleError(reg.RosterFor(myIndex), LegendLookup, reg.MaxPerClub, LeagueDefinition.ParseOvrCaps(reg.CapBands), legend);
+            if (!string.IsNullOrEmpty(ruleErr))
+                return new LeagueOpResponse(ruleErr, null);
 
             ApplyPick(reg, myIndex, legend, formation);
             reg.SpinClub = null; reg.SpinSeason = null; // consumed — next drafter spins fresh
@@ -677,13 +764,23 @@ namespace Game.Server
                     bool home = f.HomeIndex == myIndex;
                     int myGoals  = home ? r.HomeGoals : r.AwayGoals;
                     int oppGoals = home ? r.AwayGoals : r.HomeGoals;
+                    string oppName = reg.Members[home ? f.AwayIndex : f.HomeIndex].Name;
+                    // My scorers (the goals on my side of the fixture), for the flavour report.
+                    List<string> mine = new List<string>();
+                    if (r.Goals != null)
+                        foreach (MatchGoalDetail g in r.Goals)
+                            if (g.HomeSide == home && !string.IsNullOrEmpty(g.Scorer))
+                                mine.Add($"{Surname(g.Scorer)} {g.Minute}'");
+                    ulong reportSeed = (ulong)(matchdayIndex + 1) * 2654435761ul ^ (ulong)(myIndex + 1);
                     return new LeaguePlayResult
                     {
-                        OpponentName = reg.Members[home ? f.AwayIndex : f.HomeIndex].Name,
+                        OpponentName = oppName,
                         Home         = home,
                         MyGoals      = myGoals,
                         OppGoals     = oppGoals,
                         Outcome      = myGoals > oppGoals ? 1 : myGoals < oppGoals ? -1 : 0,
+                        Goals        = r.Goals, // named scorers, in fixture-home perspective (client maps via Home)
+                        Report       = MatchReport.Fixture(oppName, myGoals, oppGoals, string.Join(", ", mine), reportSeed),
                     };
                 }
                 return null;
@@ -764,6 +861,14 @@ namespace Game.Server
             if (!string.IsNullOrEmpty(err))
                 return new LeagueOpResponse(err, null);
 
+            // Squad-building rules: check the candidate against the roster with the dropped player removed, so
+            // a like-for-like swap (e.g. one 90+ for another, or same-club out/same-club in) stays legal.
+            Dictionary<int, string> afterDrop = new Dictionary<int, string>(roster);
+            afterDrop.Remove(slot);
+            string ruleErr = LeagueDraftEngine.SquadRuleError(afterDrop, LegendLookup, reg.MaxPerClub, LeagueDefinition.ParseOvrCaps(reg.CapBands), addLegend);
+            if (!string.IsNullOrEmpty(ruleErr))
+                return new LeagueOpResponse(ruleErr, null);
+
             // Apply: free the dropped player, install the new one in the same slot, recompute ratings.
             reg.Taken.Remove(dropLegend.Name);
             roster[slot] = addLegend.Id.Value;
@@ -772,6 +877,131 @@ namespace Game.Server
 
             SchedulePersistState();
             return new LeagueOpResponse("", Snapshot(reg, playerId));
+        }
+
+        // ---- P2P trades (player + cash) ----
+
+        /// <summary> Propose a player(+cash)-for-player trade to another manager. The proposer's coins were escrowed
+        /// from their wallet by the PlayerAction; the PlayerActor refunds if this rejects. </summary>
+        [EntityAskHandler]
+        public LeagueOpResponse HandleLeagueTradeOfferRequest(EntityId playerId, LeagueTradeOfferRequest request)
+        {
+            LeagueReg reg = Find(request.Code);
+            if (reg == null) return new LeagueOpResponse("No league with that code", null);
+            if (reg.State != LeagueState.Active) return new LeagueOpResponse("Trades open once the season starts", null);
+            SweepExpiredTrades(reg);
+
+            int fromIdx = reg.IndexOf(playerId);
+            if (fromIdx < 0) return new LeagueOpResponse("You're not in this league", null);
+            int toIdx = request.ToIndex;
+            if (toIdx < 0 || toIdx >= reg.Members.Count || toIdx == fromIdx) return new LeagueOpResponse("Pick another manager to trade with", null);
+            if (reg.Members[toIdx].IsBot) return new LeagueOpResponse("You can only trade with human managers", null);
+
+            LegendPlayer give = LookupLegend(request.GiveLegendId);
+            LegendPlayer get  = LookupLegend(request.GetLegendId);
+            string err = LeagueTradeEngine.ValidatePlayers(give, get);
+            if (!string.IsNullOrEmpty(err)) return new LeagueOpResponse(err, null);
+
+            Dictionary<int, string> fromRoster = reg.RosterFor(fromIdx);
+            Dictionary<int, string> toRoster   = reg.RosterFor(toIdx);
+            if (RosterSlotOf(fromRoster, give.Id.Value) < 0) return new LeagueOpResponse("You don't have that player", null);
+            if (RosterSlotOf(toRoster, get.Id.Value) < 0)    return new LeagueOpResponse("They don't have that player", null);
+
+            foreach (TradeOffer o in reg.TradeOffers)
+                if (o.FromIndex == fromIdx && o.ToIndex == toIdx && o.GiveLegendId == give.Id.Value && o.GetLegendId == get.Id.Value)
+                    return new LeagueOpResponse("You already have that offer pending", null);
+
+            reg.TradeOffers.Add(new TradeOffer
+            {
+                OfferId = ++reg.NextTradeOfferId, FromIndex = fromIdx, ToIndex = toIdx,
+                GiveLegendId = give.Id.Value, GetLegendId = get.Id.Value,
+                Coins = System.Math.Max(0, request.Coins), ExpiresAt = MetaTime.Now + MetaDuration.FromHours(24),
+            });
+            SchedulePersistState();
+            return new LeagueOpResponse("", Snapshot(reg, playerId));
+        }
+
+        /// <summary> Respond to a trade: the recipient accepts/rejects; the proposer cancels (Accept=false). </summary>
+        [EntityAskHandler]
+        public LeagueOpResponse HandleLeagueTradeRespondRequest(EntityId playerId, LeagueTradeRespondRequest request)
+        {
+            LeagueReg reg = Find(request.Code);
+            if (reg == null) return new LeagueOpResponse("No league with that code", null);
+            int meIdx = reg.IndexOf(playerId);
+            if (meIdx < 0) return new LeagueOpResponse("You're not in this league", null);
+
+            TradeOffer offer = reg.TradeOffers.Find(o => o.OfferId == request.OfferId);
+            if (offer == null) return new LeagueOpResponse("That offer is no longer available", null);
+
+            // Proposer cancelling their own offer, or recipient rejecting → refund the proposer's escrow.
+            if (meIdx == offer.FromIndex || (meIdx == offer.ToIndex && !request.Accept))
+            {
+                reg.TradeOffers.Remove(offer);
+                RefundProposer(reg, offer);
+                SchedulePersistState();
+                return new LeagueOpResponse("", Snapshot(reg, playerId));
+            }
+            if (meIdx != offer.ToIndex) return new LeagueOpResponse("That's not your trade", null);
+
+            // Accept: re-validate, swap the two players into each other's freed slots, pay the escrow to the recipient.
+            LegendPlayer give = LookupLegend(offer.GiveLegendId);
+            LegendPlayer get  = LookupLegend(offer.GetLegendId);
+            Dictionary<int, string> fromRoster = reg.RosterFor(offer.FromIndex);
+            Dictionary<int, string> toRoster   = reg.RosterFor(offer.ToIndex);
+            int giveSlot = RosterSlotOf(fromRoster, offer.GiveLegendId);
+            int getSlot  = RosterSlotOf(toRoster, offer.GetLegendId);
+            if (!string.IsNullOrEmpty(LeagueTradeEngine.ValidatePlayers(give, get)) || giveSlot < 0 || getSlot < 0)
+            {
+                reg.TradeOffers.Remove(offer);
+                RefundProposer(reg, offer);
+                SchedulePersistState();
+                return new LeagueOpResponse("That trade is no longer valid — the offer was withdrawn", Snapshot(reg, playerId));
+            }
+
+            // Taken (league-wide uniqueness by name) is unchanged — both names stay taken, by the other manager now.
+            fromRoster[giveSlot] = offer.GetLegendId;
+            toRoster[getSlot]    = offer.GiveLegendId;
+            reg.Locked[offer.FromIndex] = LeagueDraftEngine.ResolveRosterRatings(FormationInfoById(reg.FormationValueFor(offer.FromIndex)), fromRoster, LegendLookup);
+            reg.Locked[offer.ToIndex]   = LeagueDraftEngine.ResolveRosterRatings(FormationInfoById(reg.FormationValueFor(offer.ToIndex)), toRoster, LegendLookup);
+
+            if (offer.Coins > 0)
+                CastMessage(reg.Members[offer.ToIndex].Id, new LeagueAdjustCoinsMessage(offer.Coins)); // proposer's escrow → recipient
+            reg.TradeOffers.Remove(offer);
+            SchedulePersistState();
+            return new LeagueOpResponse("", Snapshot(reg, playerId));
+        }
+
+        void RefundProposer(LeagueReg reg, TradeOffer offer)
+        {
+            if (offer.Coins > 0 && offer.FromIndex >= 0 && offer.FromIndex < reg.Members.Count)
+                CastMessage(reg.Members[offer.FromIndex].Id, new LeagueAdjustCoinsMessage(offer.Coins));
+        }
+
+        void SweepExpiredTrades(LeagueReg reg)
+        {
+            MetaTime now = MetaTime.Now;
+            for (int i = reg.TradeOffers.Count - 1; i >= 0; i--)
+            {
+                if (reg.TradeOffers[i].ExpiresAt <= now)
+                {
+                    RefundProposer(reg, reg.TradeOffers[i]);
+                    reg.TradeOffers.RemoveAt(i);
+                }
+            }
+        }
+
+        static int RosterSlotOf(Dictionary<int, string> roster, string legendId)
+        {
+            foreach ((int slot, string id) in roster)
+                if (id == legendId) return slot;
+            return -1;
+        }
+
+        static string Surname(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return name;
+            string[] parts = name.Split(' ');
+            return parts.Length > 1 ? parts[parts.Length - 1] : name;
         }
 
         /// <summary> Admin (dashboard): open/close a league's transfer window, overriding the daily schedule. </summary>
@@ -821,13 +1051,13 @@ namespace Game.Server
         }
 
         /// <summary> Auto-picks the best available legend for whoever's turn it currently is. Returns false if the pool is dry. </summary>
-        static bool AutoPickCurrent(LeagueReg reg)
+        bool AutoPickCurrent(LeagueReg reg) // instance (not static): reads DefaultDef() for the squad rules
         {
             int current = LeagueDraftEngine.CurrentDrafterIndex(reg.DraftPick, reg.Members.Count);
             if (current < 0)
                 return false;
             FormationInfo formation = FormationInfoById(reg.FormationValueFor(current));
-            LegendPlayer best = LeagueDraftEngine.BestAvailablePick(formation, reg.RosterFor(current), reg.Taken, DraftPool);
+            LegendPlayer best = LeagueDraftEngine.BestAvailablePick(formation, reg.RosterFor(current), reg.Taken, DraftPool, LegendLookup, reg.MaxPerClub, LeagueDefinition.ParseOvrCaps(reg.CapBands));
             if (best == null)
                 return false;
             ApplyPick(reg, current, best, formation);
@@ -858,7 +1088,7 @@ namespace Game.Server
                 int guard = 0;
                 while (roster.Count < LeagueDraftEngine.PicksPerTeam && guard++ < 50)
                 {
-                    LegendPlayer best = LeagueDraftEngine.BestAvailablePick(botFormation, roster, reg.Taken, DraftPool);
+                    LegendPlayer best = LeagueDraftEngine.BestAvailablePick(botFormation, roster, reg.Taken, DraftPool, LegendLookup, reg.MaxPerClub, LeagueDefinition.ParseOvrCaps(reg.CapBands));
                     if (best == null)
                         break;
                     PlaceInRoster(reg, i, best, botFormation);
@@ -902,7 +1132,8 @@ namespace Game.Server
                 MatchResult sim = MatchSim.Resolve(LockedOrBaseline(reg, f.HomeIndex), LockedOrBaseline(reg, f.AwayIndex), seed);
                 int homeGoals = sim.HomeGoals + goalBonus;
                 int awayGoals = sim.AwayGoals + goalBonus;
-                reg.Results.Add(new LeagueResult(f.HomeIndex, f.AwayIndex, homeGoals, awayGoals));
+                List<MatchGoalDetail> goals = MatchSim.AttributeScorers(sim, SquadFor(reg, f.HomeIndex), SquadFor(reg, f.AwayIndex), seed);
+                reg.Results.Add(new LeagueResult(f.HomeIndex, f.AwayIndex, homeGoals, awayGoals) { Goals = goals });
                 reg.Played.Add((f.HomeIndex, f.AwayIndex));
                 reg.LastMatchdayLines.Add($"{reg.Members[f.HomeIndex].Name} {homeGoals}–{awayGoals} {reg.Members[f.AwayIndex].Name}");
 
@@ -943,6 +1174,19 @@ namespace Game.Server
 
         static LineRatings Baseline() => new LineRatings { Attack = 72, Midfield = 72, Defence = 72, Goalkeeping = 70 };
         static LineRatings LockedOrBaseline(LeagueReg reg, int index) => reg.Locked.TryGetValue(index, out LineRatings r) ? r : Baseline();
+
+        /// <summary> A member's drafted XI as (name, position, ovr) tuples — fed to scorer attribution. </summary>
+        static List<(string Name, Position Pos, int Ovr)> SquadFor(LeagueReg reg, int index)
+        {
+            List<(string Name, Position Pos, int Ovr)> squad = new List<(string Name, Position Pos, int Ovr)>();
+            foreach ((int _, string legendId) in reg.RosterFor(index))
+            {
+                LegendPlayer p = LookupLegend(legendId);
+                if (p != null)
+                    squad.Add((p.Name, p.Position, p.Ovr));
+            }
+            return squad;
+        }
 
         static ulong SeedFor(string code, int home, int away)
         {
@@ -1040,6 +1284,28 @@ namespace Game.Server
                 snap.NextSimAtMillis    = reg.State == LeagueState.Active ? reg.NextSimTime.MillisecondsSinceEpoch : 0;
                 snap.LastMatchdayNumber = reg.LastMatchdayNumber;
                 snap.LastMatchdayLines  = new List<string>(reg.LastMatchdayLines);
+
+                // Browsable results history (visible to all members) — cap to the most recent fixtures to bound size.
+                const int maxResultLines = 120;
+                Dictionary<(int, int), int> fixtureMatchday = new Dictionary<(int, int), int>();
+                for (int md = 0; md < reg.Fixtures.Count; md++)
+                    foreach (LeagueFixture fx in reg.Fixtures[md])
+                        fixtureMatchday[(fx.HomeIndex, fx.AwayIndex)] = md + 1;
+                int firstResult = Math.Max(0, reg.Results.Count - maxResultLines);
+                for (int ri = firstResult; ri < reg.Results.Count; ri++)
+                {
+                    LeagueResult r = reg.Results[ri];
+                    fixtureMatchday.TryGetValue((r.HomeIndex, r.AwayIndex), out int md);
+                    snap.SeasonResults.Add(new LeagueResultLine
+                    {
+                        Matchday  = md,
+                        HomeName  = r.HomeIndex >= 0 && r.HomeIndex < reg.Members.Count ? reg.Members[r.HomeIndex].Name : "?",
+                        AwayName  = r.AwayIndex >= 0 && r.AwayIndex < reg.Members.Count ? reg.Members[r.AwayIndex].Name : "?",
+                        HomeGoals = r.HomeGoals,
+                        AwayGoals = r.AwayGoals,
+                        Goals     = r.Goals,
+                    });
+                }
             }
 
             // Invincible = the viewing manager played every fixture and won them all (38-0 in a full 20-team league).
@@ -1059,6 +1325,47 @@ namespace Game.Server
             snap.TransferWindowOpen = IsTransferWindowOpen(reg, DefaultDef());
             if (myIndex >= 0)
                 snap.MyTransferBudget = reg.Members[myIndex].TransferBudget;
+
+            snap.HideRatings = reg.HideRatings; // hard mode → client masks OVRs in the draft/roster UI
+            snap.MaxPerClub  = reg.MaxPerClub;
+            snap.CapBands    = reg.CapBands;
+            snap.DraftPin    = reg.DraftPin;
+            // Pending P2P trades involving the viewer (incoming to accept/reject + outgoing to cancel).
+            SweepExpiredTrades(reg);
+            if (myIndex >= 0)
+            {
+                foreach (TradeOffer o in reg.TradeOffers)
+                {
+                    if (o.FromIndex != myIndex && o.ToIndex != myIndex) continue;
+                    LegendPlayer give = LookupLegend(o.GiveLegendId);
+                    LegendPlayer get  = LookupLegend(o.GetLegendId);
+                    if (give == null || get == null) continue;
+                    bool incoming = o.ToIndex == myIndex;
+                    int otherIdx = incoming ? o.FromIndex : o.ToIndex;
+                    snap.MyTradeOffers.Add(new TradeOfferView
+                    {
+                        OfferId = o.OfferId, Incoming = incoming,
+                        OtherName = otherIdx >= 0 && otherIdx < reg.Members.Count ? reg.Members[otherIdx].Name : "",
+                        GiveName = give.Name, GiveOvr = give.Ovr, GivePos = give.Position,
+                        GetName  = get.Name,  GetOvr  = get.Ovr,  GetPos  = get.Position, Coins = o.Coins,
+                    });
+                }
+                // Other human managers' rosters — the trade-proposal picker (only in-season).
+                if (reg.State == LeagueState.Active)
+                {
+                    for (int i = 0; i < reg.Members.Count; i++)
+                    {
+                        if (i == myIndex || reg.Members[i].IsBot) continue;
+                        Dictionary<int, string> r = reg.RosterFor(i);
+                        if (r.Count == 0) continue;
+                        LeagueRosterView rv = new LeagueRosterView { MemberIndex = i, Name = reg.Members[i].Name };
+                        foreach ((int _, string id) in r) rv.LegendIds.Add(id);
+                        snap.TradeRosters.Add(rv);
+                    }
+                }
+            }
+            snap.NoSameClub  = reg.MaxPerClub >= 1;                    // legacy back-compat for older clients
+            snap.SquadCaps   = !string.IsNullOrEmpty(reg.CapBands);
 
             return snap;
         }

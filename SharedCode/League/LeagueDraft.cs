@@ -117,11 +117,60 @@ namespace Game.Logic
         }
 
         /// <summary>
-        /// The best available pick for a manager: the highest-OVR legend in <paramref name="corpus"/> that is not
-        /// taken and fits an open slot in their formation. Deterministic (first of equal OVR in corpus order wins).
-        /// Returns null if the pool is exhausted for every open position. Used for "auto-pick" / unstalling.
+        /// Per-league squad-building rules (the tester's "create difficulty + friction" asks): returns "" if
+        /// adding <paramref name="candidate"/> to <paramref name="roster"/> is allowed, else a human-readable
+        /// reason. Enforces (a) no two players from the same club (any era) and (b) cumulative OVR-band caps —
+        /// both driven by <see cref="LeagueDefinition"/>. Pure + shared so the server enforces it authoritatively
+        /// and the client can grey/disable picks with the same reason. Uniqueness + open-slot are separate (CanPick).
         /// </summary>
-        public static LegendPlayer BestAvailablePick(FormationInfo formation, IReadOnlyDictionary<int, string> roster, ICollection<string> taken, IReadOnlyList<LegendPlayer> corpus)
+        public static string SquadRuleError(IReadOnlyDictionary<int, string> roster, System.Func<LegendId, LegendPlayer> lookup, int maxPerClub, IReadOnlyList<(int Threshold, int Max)> ovrCaps, LegendPlayer candidate)
+        {
+            if (candidate == null) return "Unknown player";
+            if (roster == null || lookup == null) return "";
+
+            // Resolve the legends currently in the roster once.
+            List<LegendPlayer> current = new List<LegendPlayer>();
+            foreach ((int _, string id) in roster)
+            {
+                LegendPlayer p = lookup(LegendId.FromString(id));
+                if (p != null) current.Add(p);
+            }
+
+            // (a) At most maxPerClub players from one club (0 = no club limit, 1 = the classic "one per club").
+            if (maxPerClub >= 1 && !string.IsNullOrEmpty(candidate.Club))
+            {
+                int sameClub = 0;
+                foreach (LegendPlayer p in current)
+                    if (string.Equals(p.Club, candidate.Club, System.StringComparison.OrdinalIgnoreCase)) sameClub++;
+                if (sameClub + 1 > maxPerClub)
+                    return maxPerClub == 1
+                        ? $"One player per club — you already have a {candidate.Club} pick"
+                        : $"Max {maxPerClub} per club — you already have {sameClub} from {candidate.Club}";
+            }
+
+            // (b) Cumulative OVR-band caps: each band limits ALL players at/above its threshold.
+            if (ovrCaps != null)
+            {
+                foreach ((int threshold, int max) in ovrCaps)
+                {
+                    if (candidate.Ovr < threshold) continue;
+                    int count = 0;
+                    foreach (LegendPlayer p in current)
+                        if (p.Ovr >= threshold) count++;
+                    if (count + 1 > max)
+                        return $"Squad limit: max {max} player{(max == 1 ? "" : "s")} rated {threshold}+";
+                }
+            }
+            return "";
+        }
+
+        /// <summary>
+        /// The best available pick for a manager: the highest-OVR legend in <paramref name="corpus"/> that is not
+        /// taken, fits an open slot, and (when <paramref name="lookup"/>+<paramref name="def"/> are supplied) does
+        /// not break the squad rules. Deterministic (first of equal OVR in corpus order wins). Returns null if the
+        /// pool is exhausted for every open position. Used for "auto-pick" / bot fill / unstalling.
+        /// </summary>
+        public static LegendPlayer BestAvailablePick(FormationInfo formation, IReadOnlyDictionary<int, string> roster, ICollection<string> taken, IReadOnlyList<LegendPlayer> corpus, System.Func<LegendId, LegendPlayer> lookup = null, int maxPerClub = 0, IReadOnlyList<(int Threshold, int Max)> ovrCaps = null)
         {
             HashSet<Position> open = OpenPositions(formation, roster);
             if (open.Count == 0 || corpus == null)
@@ -134,6 +183,8 @@ namespace Game.Logic
                     continue;
                 if (taken != null && taken.Contains(legend.Name)) // uniqueness by real-player name
                     continue;
+                if (lookup != null && SquadRuleError(roster, lookup, maxPerClub, ovrCaps, legend).Length > 0)
+                    continue; // would break max-per-club / OVR caps
                 if (best == null || legend.Ovr > best.Ovr)
                     best = legend;
             }
@@ -196,6 +247,22 @@ namespace Game.Logic
             if (addLegend.Position != formation.Slots[slot]) return $"Need a {formation.Slots[slot]} for that slot";
             if (taken != null && taken.Contains(addLegend.Name)) return $"{addLegend.Name} is already on another team";
 
+            return "";
+        }
+    }
+
+    /// <summary>
+    /// Pure validation for a P2P trade between two managers: both players exist, are distinct, and share a
+    /// position (so each drops cleanly into the other's freed slot). Ownership/affordability are the actor's job.
+    /// </summary>
+    public static class LeagueTradeEngine
+    {
+        public static string ValidatePlayers(LegendPlayer give, LegendPlayer get)
+        {
+            if (give == null) return "Unknown player offered";
+            if (get == null)  return "Unknown player requested";
+            if (give.Name == get.Name) return "Pick two different players";
+            if (give.Position != get.Position) return $"Trade like-for-like — both must be {give.Position}s";
             return "";
         }
     }

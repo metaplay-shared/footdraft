@@ -65,6 +65,24 @@ namespace Game.Logic
         [MetaMember(135)] public LoginStreak       LoginStreak    { get; private set; } = new LoginStreak();
         /// <summary> Daily-quest progress (WS4 retention); advanced on match results, claimed for Coins. </summary>
         [MetaMember(136)] public PlayerQuests      Quests         { get; private set; } = new PlayerQuests();
+        /// <summary> The manager's current Draft Cup run (FUT-Draft-style paid mode). </summary>
+        [MetaMember(137)] public DraftCupRun       DraftCup       { get; private set; } = new DraftCupRun();
+        /// <summary> The manager's current World Cup 2026 run (draft a WC XI from real squads → knockout vs real nations). </summary>
+        [MetaMember(138)] public WorldCupRun       WorldCup       { get; private set; } = new WorldCupRun();
+        /// <summary> Lifetime trophy cabinet + all-time peaks (drives the manager profile + achievements). </summary>
+        [MetaMember(139)] public PlayerHonours     Honours        { get; private set; } = new PlayerHonours();
+        /// <summary> Scouted-player collection ("My Club" gallery) — every player ever drafted into a knockout XI. </summary>
+        [MetaMember(140)] public PlayerCollection  Collection     { get; private set; } = new PlayerCollection();
+        /// <summary> Scout Pack state (open counter, daily-free claim, last pull for the reveal). </summary>
+        [MetaMember(141)] public PlayerPacks       Packs          { get; private set; } = new PlayerPacks();
+        /// <summary> Claimed-objective state (the career reward track; progress is computed, not stored). </summary>
+        [MetaMember(142)] public PlayerObjectives  Objectives     { get; private set; } = new PlayerObjectives();
+        /// <summary> Store state — which one-time Featured Offer bundles have been bought. </summary>
+        [MetaMember(143)] public PlayerStore       Store          { get; private set; } = new PlayerStore();
+        /// <summary> Cached top-N World Cup leaderboard (fetched from the leaderboard service for the WC hub view). </summary>
+        [MetaMember(144)] public WorldCupLeaderboardSnapshot WcLeaderboard { get; set; }
+        /// <summary> Draft-edge consumables from Scout Packs, spent on the next spin-draft (rerolls / elite spins). </summary>
+        [MetaMember(145)] public DraftBoosts       Boosts         { get; private set; } = new DraftBoosts();
 
         protected override void GameInitializeNewPlayerModel(MetaTime now, ISharedGameConfig gameConfig, EntityId playerId, string name)
         {
@@ -199,6 +217,8 @@ namespace Game.Logic
             int division = GameConfig.Global.DivisionIndex(Rank.Points);
             if (division > Rank.BestDivisionIndex)
                 Rank.BestDivisionIndex = division;
+            if (division > Honours.BestRankDivision)
+                Honours.BestRankDivision = division;
         }
 
         /// <summary> Rolls the Bracket Cup run to the current weekly window, resetting it when the week changed. </summary>
@@ -227,12 +247,44 @@ namespace Game.Logic
                 && config.Formations.TryGetValue(Draft.Formation, out FormationInfo formation)
                 && Draft.IsComplete(formation))
             {
-                return DraftEngine.ComputeLines(Draft, formation,
-                    id => config.Legends.TryGetValue(id, out LegendPlayer p) ? p : null);
+                return DraftEngine.ComputeLines(Draft, formation, ResolveDraftPlayer);
             }
 
             // Baseline scratch XI for managers who haven't finished a draft yet.
             return new LineRatings { Attack = 72, Midfield = 72, Defence = 72, Goalkeeping = 70, Chemistry = 0 };
+        }
+
+        /// <summary>
+        /// Resolves a drafted player id to its record. Checks the legend corpus first, then the World Cup squads,
+        /// so a single <see cref="DraftedSquad"/> can hold a legend XI (Draft Cup / matches) OR a World-Cup XI.
+        /// </summary>
+        public LegendPlayer ResolveDraftPlayer(LegendId id)
+        {
+            SharedGameConfig config = GameConfig;
+            if (config.Legends.TryGetValue(id, out LegendPlayer legend))
+                return legend;
+            if (config.WorldCupPlayers.TryGetValue(id, out LegendPlayer wc))
+                return wc;
+            return null;
+        }
+
+        /// <summary>
+        /// Records the manager's current drafted XI as it locks into a knockout: scouts each player into the
+        /// collection and tracks the all-time best-XI overall. Called at the Drafting→Active transition of the
+        /// Draft Cup / World Cup so the profile + My Club fill up as the manager plays.
+        /// </summary>
+        public void RecordDraftedXiForPlay()
+        {
+            foreach ((int _, LegendId id) in Draft.Picks)
+            {
+                LegendPlayer p = ResolveDraftPlayer(id);
+                if (p != null)
+                    Collection.Record(p.Id.Value);
+            }
+            LineRatings r = ResolveDraftRatings();
+            int ovr = System.Math.Clamp((r.Attack * 3 + r.Midfield * 3 + r.Defence * 3 + r.Goalkeeping) / 10, 0, 99);
+            if (ovr > Honours.BestDraftedXiOvr)
+                Honours.BestDraftedXiOvr = ovr;
         }
 
         /// <summary> The total dice "strength" (sum of die sides) of the manager's current selected squad. </summary>

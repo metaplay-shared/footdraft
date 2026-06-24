@@ -16,7 +16,7 @@
                           OnRetry="OnReconnect">
 
     @* ===== Minimal menu: wordmark + Start / Join League (38-0.app style). Hidden while the league hub is open. ===== *@
-    <div class="t38-bg t38-pitch fixed inset-0 flex flex-col items-center justify-center @(_showLeague ? "hidden" : "")"
+    <div class="t38-bg t38-pitch fixed inset-0 flex flex-col items-center justify-center @(_showLeague || _showDraftCup || _showWorldCup || _showProfile ? "hidden" : "")"
          style="padding: calc(2rem + env(safe-area-inset-top)) 1.5rem calc(3rem + env(safe-area-inset-bottom));">
 
         <div class="flex flex-col items-center text-center" style="max-width: 23rem; width: 100%;">
@@ -45,6 +45,13 @@
                         @onclick="@(() => OpenLeague("join"))">JOIN WITH A CODE</button>
             }
 
+            <button class="t38-cta-amber text-base w-full py-3 mt-3 t38-tap" data-testid="world-cup"
+                    @onclick="@(() => _showWorldCup = true)">🌍 WORLD CUP 2026</button>
+            <button class="t38-ghost text-base w-full py-3 mt-2 t38-tap" data-testid="draft-cup"
+                    @onclick="@(() => _showDraftCup = true)">🏆 DRAFT CUP</button>
+            <button class="text-xs text-white/55 py-2 mt-2 t38-tap" data-testid="open-profile"
+                    @onclick="@(() => _showProfile = true)"><span>👤 Manager profile &amp; club</span>@if (ClaimableObjectives > 0) { <span style="color:var(--t38-amber);"> · @ClaimableObjectives to claim</span> }</button>
+
             <div class="flex items-center justify-center gap-7 mt-12">
                 <div class="flex flex-col items-center"><span class="t38-display text-2xl text-white">@LegendCountText</span><span class="t38-label text-[9px] text-white/40 mt-1">Legends</span></div>
                 <div class="flex flex-col items-center"><span class="t38-display text-2xl text-white">20</span><span class="t38-label text-[9px] text-white/40 mt-1">Teams</span></div>
@@ -63,17 +70,56 @@
         <LeagueHub InitialMode="@_leagueMode" OnClose="@(() => _showLeague = false)" />
     }
 
+    @* ===== Draft Cup (FUT-Draft-style paid mode) ===== *@
+    @if (_showDraftCup)
+    {
+        <DraftCupHub OnClose="@(() => _showDraftCup = false)" />
+    }
+
+    @* ===== World Cup 2026 (draft a WC squad → knockout vs real nations) ===== *@
+    @if (_showWorldCup)
+    {
+        <WorldCupHub OnClose="@(() => _showWorldCup = false)" />
+    }
+
+    @* ===== Manager profile + My Club collection ===== *@
+    @if (_showProfile)
+    {
+        <ManagerProfileHub OnClose="@(() => _showProfile = false)" />
+    }
+
     @* ===== Persistent currency HUD (last in DOM so its Shop overlay paints above the hub's overlays) ===== *@
-    <TopBar Show="@_showLeague" />
+    <TopBar Show="@(_showLeague || _showDraftCup || _showWorldCup || _showProfile)" />
+
+    @* ===== Daily-login welcome-back reward (auto-granted server-side on session start) ===== *@
+    @if (MetaplayService.PendingStreakReward is { } streak)
+    {
+        <div class="t38-bg fixed inset-0 z-[90] flex flex-col items-center justify-center px-8 text-center" data-testid="streak-popup"
+             @onclick="@(() => MetaplayService.ClearStreakReward())">
+            <span class="text-6xl fd-victory-pop">🎁</span>
+            <p class="t38-label text-[11px] text-white/50 mt-3">welcome back, gaffer</p>
+            <p class="t38-display text-3xl text-white mt-1">DAY @streak.Streak STREAK</p>
+            <div class="t38-display text-4xl mt-3" style="color:var(--t38-amber);">+@streak.Coins 🪙</div>
+            <button class="t38-cta text-lg px-12 py-3 mt-6 t38-tap" data-testid="claim-streak"
+                    @onclick="@(() => MetaplayService.ClearStreakReward())" @onclick:stopPropagation="true">CLAIM →</button>
+            <span class="t38-label text-[9px] text-white/30 mt-2">tap to continue</span>
+        </div>
+    }
 
 </ConnectionStateContainer>
 
 @code {
     private bool _showLeague;
+    private bool _showDraftCup;
+    private bool _showWorldCup;
+    private bool _showProfile;
     private string _leagueMode = "create";
 
     private PlayerModel? Player => MetaplayService.PlayerModel;
     private bool InLeague => Player?.League.InLeague == true;
+
+    // Landing-screen retention hook (objectives to claim).
+    private int ClaimableObjectives => Player != null ? Objectives.ClaimableCount(Player) : 0;
 
     // Live from the published config (the corpus is sheet-editable now — don't hardcode the count).
     private string LegendCountText =>

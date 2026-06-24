@@ -40,6 +40,11 @@ namespace Game.Logic
         /// <summary> Refresh the cached live-form snapshot for display. </summary>
         void RefreshForm();
 
+        /// <summary> Report the manager's best World Cup run to the global leaderboard (called when a run ends). </summary>
+        void ReportWorldCupResult(int titles, int bestRound, int bestXiOvr, int runs);
+        /// <summary> Fetch + cache the top-N World Cup leaderboard for the WC hub. </summary>
+        void RefreshWorldCupLeaderboard();
+
         /// <summary>
         /// Triggered by <see cref="PlayerSpinForSlot"/>: roll a (Club, Era) spin bucket for <paramref name="slot"/>
         /// server-side (cheat-proof) and write it back as the pending offer via a server action.
@@ -47,8 +52,8 @@ namespace Game.Logic
         void SpinDraftSlot(int slot);
 
         // ----- Season league (P4): talk to the singleton LeagueActor, then cache the resulting snapshot. -----
-        void CreateLeague(string leagueName, string code);
-        void CreateSoloLeague(string code);
+        void CreateLeague(string leagueName, string code, bool hideRatings, int maxPerClub, string capBands, string draftPin);
+        void CreateSoloLeague(string code, bool hideRatings, int maxPerClub, string capBands, string draftPin);
         void JoinLeague(string code);
         void LeaveLeague(string code);
         void StartLeagueSeason(string code);
@@ -68,6 +73,11 @@ namespace Game.Logic
         void SimulateLeagueSeason(string code);
         /// <summary> Transfer-window swap: drop one drafted legend for another during an open window (WS3). The fee was already charged from the wallet; <paramref name="payWithGems"/> says which currency (for the refund if the league rejects). </summary>
         void LeagueTransferSwap(string code, string dropLegendId, string addLegendId, bool payWithGems);
+
+        /// <summary> P2P: propose a player(+cash)-for-player trade to another manager (the cash is escrowed from the wallet first). </summary>
+        void LeagueProposeTrade(string code, int toIndex, string giveLegendId, string getLegendId, int coins);
+        /// <summary> P2P: accept/reject (recipient) or cancel (proposer, accept=false) a pending trade offer. </summary>
+        void LeagueRespondTrade(string code, int offerId, bool accept);
     }
 
     public interface IPlayerModelClientListener
@@ -83,6 +93,9 @@ namespace Game.Logic
 
         /// <summary> A Cup milestone was claimed (refresh the Cup UI). </summary>
         void CupMilestoneClaimed(int claimedCount);
+
+        /// <summary> The daily-login streak advanced and paid out (drives the welcome-back popup). </summary>
+        void DailyStreakClaimed(int streak, long coins);
     }
 
     public class EmptyPlayerModelServerListener : IPlayerModelServerListener
@@ -101,9 +114,11 @@ namespace Game.Logic
         public void ApplyForm(string playerName, int tierDelta) { }
         public void ClearForm() { }
         public void RefreshForm() { }
+        public void ReportWorldCupResult(int titles, int bestRound, int bestXiOvr, int runs) { }
+        public void RefreshWorldCupLeaderboard() { }
         public void SpinDraftSlot(int slot) { }
-        public void CreateLeague(string leagueName, string code) { }
-        public void CreateSoloLeague(string code) { }
+        public void CreateLeague(string leagueName, string code, bool hideRatings, int maxPerClub, string capBands, string draftPin) { }
+        public void CreateSoloLeague(string code, bool hideRatings, int maxPerClub, string capBands, string draftPin) { }
         public void JoinLeague(string code) { }
         public void LeaveLeague(string code) { }
         public void StartLeagueSeason(string code) { }
@@ -115,6 +130,8 @@ namespace Game.Logic
         public void LeagueDraftAutoPick(string code, bool fillAll) { }
         public void SimulateLeagueSeason(string code) { }
         public void LeagueTransferSwap(string code, string dropLegendId, string addLegendId, bool payWithGems) { }
+        public void LeagueProposeTrade(string code, int toIndex, string giveLegendId, string getLegendId, int coins) { }
+        public void LeagueRespondTrade(string code, int offerId, bool accept) { }
     }
 
     public class EmptyPlayerModelClientListener : IPlayerModelClientListener
@@ -125,5 +142,6 @@ namespace Game.Logic
         public void ManagerLeveledUp(int newLevel) { }
         public void CardUpgraded(string cardKey, int newLevel) { }
         public void CupMilestoneClaimed(int claimedCount) { }
+        public void DailyStreakClaimed(int streak, long coins) { }
     }
 }

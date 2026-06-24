@@ -54,6 +54,19 @@ namespace Game.Server
         [MetaMember(7)] public long                        TransferBudget { get; set; } // Coins this manager can spend on transfers
     }
 
+    /// <summary> One pending P2P trade offer (proposer gives a player + cash for the target's player). </summary>
+    [MetaSerializable]
+    public class PersistedTradeOffer
+    {
+        [MetaMember(1)] public int      OfferId      { get; set; }
+        [MetaMember(2)] public int      FromIndex    { get; set; }
+        [MetaMember(3)] public int      ToIndex      { get; set; }
+        [MetaMember(4)] public string   GiveLegendId { get; set; } = "";
+        [MetaMember(5)] public string   GetLegendId  { get; set; } = "";
+        [MetaMember(6)] public int      Coins        { get; set; }
+        [MetaMember(7)] public MetaTime ExpiresAt    { get; set; }
+    }
+
     /// <summary> One persisted league. Fixtures / played-set / taken-pool / line-ratings are re-derived on load. </summary>
     [MetaSerializable]
     public class PersistedLeague
@@ -71,6 +84,22 @@ namespace Game.Server
         [MetaMember(11)] public List<string>                LastMatchdayLines  { get; set; } = new List<string>();
         /// <summary> Admin transfer-window override: 0 = follow schedule, 1 = force open, 2 = force closed. </summary>
         [MetaMember(12)] public int                         TransferWindowOverride { get; set; }
+        /// <summary> Hard mode: player ratings are hidden in this league (chosen at creation). </summary>
+        [MetaMember(13)] public bool                        HideRatings            { get; set; }
+        /// <summary> Rule: no two players from the same club in one XI. [legacy — superseded by MaxPerClub] </summary>
+        [MetaMember(14)] public bool                        NoSameClub             { get; set; } = true;
+        /// <summary> Rule: enforce the OVR-band squad caps. [legacy — superseded by CapBands] </summary>
+        [MetaMember(15)] public bool                        SquadCaps              { get; set; } = true;
+        /// <summary> Rule: max players from one club (0 = no limit). Supersedes NoSameClub. </summary>
+        [MetaMember(16)] public int                         MaxPerClub             { get; set; } = 1;
+        /// <summary> Rule: chosen OVR-cap-bands ("90:2,80:3,75:4"); "" = no caps. Supersedes SquadCaps. </summary>
+        [MetaMember(17)] public string                      CapBands               { get; set; } = "90:2,80:3,75:4";
+        /// <summary> Pin-draft House Rule ("era:E2010s,elite:1"); "" = no pin. </summary>
+        [MetaMember(18)] public string                      DraftPin               { get; set; } = "";
+        /// <summary> Pending P2P trade offers in this league. </summary>
+        [MetaMember(19)] public List<PersistedTradeOffer>   TradeOffers            { get; set; } = new List<PersistedTradeOffer>();
+        /// <summary> Monotonic id source for trade offers (so ids aren't reused across removals/restarts). </summary>
+        [MetaMember(20)] public int                         NextTradeOfferId       { get; set; }
     }
 
     /// <summary> The serialized payload of <see cref="PersistedLeagueRegistry"/>: every league in the registry. </summary>

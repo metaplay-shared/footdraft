@@ -39,6 +39,102 @@
                 <span class="text-xs text-white/70">balance <span style="color:var(--t38-amber);font-weight:800;" data-testid="transfer-budget">🪙 @Coins.ToString("N0")</span></span>
             </div>
 
+            @* ---------- P2P TRADES: swap a player (+ cash) with a rival manager ---------- *@
+            <div class="t38-card px-4 py-3" data-testid="trades">
+                <div class="flex items-center justify-between">
+                    <span class="t38-label text-xs text-white/55">💱 Trades</span>
+                    <button class="text-[11px] px-2.5 py-1 rounded-lg t38-tap" style="background:rgba(255,255,255,0.06);color:#fff;"
+                            data-testid="trade-propose-toggle" @onclick="@(() => _showPropose = !_showPropose)">@(_showPropose ? "✕ cancel" : "+ propose")</button>
+                </div>
+
+                @if (Snap.MyTradeOffers.Count == 0 && !_showPropose)
+                {
+                    <p class="text-[11px] text-white/40 mt-1">No pending trades. Offer a player + cash to a rival manager.</p>
+                }
+                @foreach (TradeOfferView o in Snap.MyTradeOffers)
+                {
+                    <div class="rounded-lg px-3 py-2 mt-1.5" style="background:rgba(255,255,255,0.03);" data-testid="trade-offer">
+                        @if (o.Incoming)
+                        {
+                            <div class="text-[11px] text-white/80"><span style="font-weight:700;">@o.OtherName</span> offers <span style="color:var(--t38-emerald);">@ShortName(o.GiveName) @o.GiveOvr</span>@(o.Coins > 0 ? $" + 🪙{o.Coins}" : "") for your <span style="color:#ffb0ac;">@ShortName(o.GetName) @o.GetOvr</span></div>
+                            <div class="flex gap-2 mt-1.5">
+                                <button class="t38-cta text-xs flex-1 py-2 t38-tap" data-testid="trade-accept" @onclick="@(() => MetaplayService.LeagueRespondTrade(o.OfferId, true))">ACCEPT</button>
+                                <button class="t38-ghost text-xs flex-1 py-2 t38-tap" data-testid="trade-reject" @onclick="@(() => MetaplayService.LeagueRespondTrade(o.OfferId, false))">REJECT</button>
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="text-[11px] text-white/70">You offered <span style="color:#ffb0ac;">@ShortName(o.GiveName) @o.GiveOvr</span>@(o.Coins > 0 ? $" + 🪙{o.Coins}" : "") for @(o.OtherName)'s <span style="color:var(--t38-emerald);">@ShortName(o.GetName) @o.GetOvr</span> <span class="text-white/35">· pending</span></div>
+                            <button class="t38-ghost text-[11px] px-3 py-1.5 mt-1.5 t38-tap" data-testid="trade-cancel" @onclick="@(() => MetaplayService.LeagueRespondTrade(o.OfferId, false))">Cancel offer</button>
+                        }
+                    </div>
+                }
+
+                @if (_showPropose)
+                {
+                    <div class="mt-2 flex flex-col gap-2" style="border-top:1px solid var(--t38-line);padding-top:0.5rem;">
+                        @if (Snap.TradeRosters.Count == 0)
+                        {
+                            <p class="text-[11px] text-white/40">No human managers to trade with yet.</p>
+                        }
+                        else
+                        {
+                            <select class="t38-input text-xs py-2 px-2" @bind="_tradeToStr" data-testid="trade-to">
+                                <option value="">Trade with…</option>
+                                @foreach (LeagueRosterView rv in Snap.TradeRosters)
+                                {
+                                    <option value="@rv.MemberIndex">@rv.Name</option>
+                                }
+                            </select>
+                            @if (TargetRoster is { } target)
+                            {
+                                <select class="t38-input text-xs py-2 px-2" @bind="_tradeGetId" data-testid="trade-get">
+                                    <option value="">Their player you want…</option>
+                                    @foreach (string id in target.LegendIds)
+                                    {
+                                        LegendPlayer? tp = Lookup(id);
+                                        if (tp != null) { <option value="@id">@tp.Name (@tp.Ovr @PosShort(tp.Position))</option> }
+                                    }
+                                </select>
+                                @if (GetPlayer is { } want)
+                                {
+                                    <select class="t38-input text-xs py-2 px-2" @bind="_tradeGiveId" data-testid="trade-give">
+                                        <option value="">Your @PosShort(want.Position) to give…</option>
+                                        @foreach ((int slot, string id) in Snap.MyRoster.OrderBy(kv => kv.Key))
+                                        {
+                                            LegendPlayer? mine = Lookup(id);
+                                            if (mine != null && mine.Position == want.Position) { <option value="@id">@mine.Name (@mine.Ovr)</option> }
+                                        }
+                                    </select>
+                                    <div class="flex items-center gap-2">
+                                        <span class="text-[11px] text-white/55">+ cash 🪙</span>
+                                        <input type="number" min="0" inputmode="numeric" @bind="_tradeCoins" class="t38-input text-xs py-1.5 px-2 flex-1" data-testid="trade-coins" />
+                                    </div>
+                                    <button class="t38-cta text-sm w-full py-2.5 t38-tap" data-testid="trade-propose"
+                                            disabled="@(!CanPropose)" @onclick="Propose">SEND OFFER</button>
+                                }
+                            }
+                        }
+                    </div>
+                }
+            </div>
+
+            @* Transfer result feedback — without this a rejected swap (window closed, player already taken,
+               not enough coins) just vanished, which is the "doesn't always make the change" tester report. *@
+            @if (_inFlight)
+            {
+                <div class="text-xs px-3 py-2 rounded-xl" data-testid="transfer-status"
+                     style="background: rgba(52,211,154,0.14); color: var(--t38-emerald);">🔄 Signing…</div>
+            }
+            else if (!string.IsNullOrEmpty(_resultError))
+            {
+                <div class="text-xs px-3 py-2 rounded-xl flex items-center justify-between gap-2" data-testid="transfer-error"
+                     style="background: rgba(224,86,79,0.16); color:#ffb0ac;">
+                    <span>⚠ @_resultError</span>
+                    <button class="text-white/50 shrink-0" @onclick="@(() => _resultError = null)">✕</button>
+                </div>
+            }
+
             @if (!Snap.TransferWindowOpen)
             {
                 <div class="t38-card px-5 py-10 flex flex-col items-center text-center mt-2">
@@ -197,6 +293,37 @@
     private bool _marqueeOnly;
     private int _burstKey;
 
+    // ---- P2P trade proposal form ----
+    private bool _showPropose;
+    private string _tradeToStr = "";
+    private string? _tradeGetId;
+    private string? _tradeGiveId;
+    private int _tradeCoins;
+
+    private LeagueRosterView? TargetRoster =>
+        int.TryParse(_tradeToStr, out int idx) ? Snap?.TradeRosters.FirstOrDefault(r => r.MemberIndex == idx) : null;
+    private LegendPlayer? GetPlayer => string.IsNullOrEmpty(_tradeGetId) ? null : Lookup(_tradeGetId);
+    private bool CanPropose => TargetRoster != null && !string.IsNullOrEmpty(_tradeGetId) && !string.IsNullOrEmpty(_tradeGiveId) && _tradeCoins >= 0 && _tradeCoins <= Coins;
+
+    private void Propose()
+    {
+        if (!CanPropose || TargetRoster is not { } t) return;
+        MetaplayService.LeagueProposeTrade(t.MemberIndex, _tradeGiveId!, _tradeGetId!, _tradeCoins);
+        _showPropose = false; _tradeToStr = ""; _tradeGetId = null; _tradeGiveId = null; _tradeCoins = 0;
+    }
+
+    // Transfer-result tracking: a swap is in flight from ConfirmSwap until the server's snapshot resync arrives.
+    // We must not resolve on the first state-change (the client-predicted wallet spend fires one immediately,
+    // before the server responds), so we resolve only when the roster actually changes (success) or a NEW
+    // LastError appears (failure).
+    private bool _inFlight;
+    private string? _resultError;
+    private string _preErr = "";
+    private string _preSig = "";
+
+    private string RosterSig() =>
+        Snap == null ? "" : string.Join(",", Snap.MyRoster.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}:{kv.Value}"));
+
     private LeagueDefinition Def =>
         Config != null && Config.LeagueDefinitions.TryGetValue(LeagueDefinitionId.FromString(LeagueDefinitionContent.DefaultId), out LeagueDefinition? def)
             ? def! : LeagueDefinitionContent.Default;
@@ -248,6 +375,10 @@
 
     private void ConfirmSwap(string dropLegendId, string addLegendId, bool payWithGems)
     {
+        _preErr = Player?.League.LastError ?? "";
+        _preSig = RosterSig();
+        _inFlight = true;
+        _resultError = null;
         MetaplayService.LeagueTransferSwap(dropLegendId, addLegendId, payWithGems);
         _burstKey++; // coin burst toward the HUD
         _dropSlot = null;
@@ -270,7 +401,25 @@
         MetaplayService.OnStateChanged += OnStateChanged;
     }
 
-    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+    private void OnStateChanged()
+    {
+        if (_inFlight)
+        {
+            string err = Player?.League.LastError ?? "";
+            string sig = RosterSig();
+            if (!string.IsNullOrEmpty(err) && err != _preErr)
+            {
+                _inFlight = false;       // server rejected the swap
+                _resultError = err;
+            }
+            else if (sig != _preSig)
+            {
+                _inFlight = false;       // roster changed → swap landed
+                _resultError = "";
+            }
+        }
+        InvokeAsync(StateHasChanged);
+    }
 
     public void Dispose()
     {

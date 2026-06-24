@@ -39,6 +39,19 @@ namespace Game.Logic.Tests
         }
 
         [Test]
+        public void NationBucketLabelsShowJustTheNationWithNoEra()
+        {
+            // A national team has no decade dimension — the spun label must read "Brazil", not "Brazil · E2020s".
+            foreach (SpinBucket b in WorldCupContent.BuildNationBuckets())
+            {
+                Assert.That(b.Era, Is.EqualTo(Era.None), $"nation bucket {b.Club} should carry Era.None");
+                Assert.That(b.Label, Is.EqualTo(b.Club), $"label should be just the nation, got '{b.Label}'");
+                Assert.That(b.Label, Does.Not.Contain("·"));
+                Assert.That(b.Label, Does.Not.Contain("E20"));
+            }
+        }
+
+        [Test]
         public void BestXiOverallAndLinesAreSane()
         {
             foreach (NationInfo n in WorldCupContent.Nations)

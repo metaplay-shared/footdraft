@@ -151,7 +151,7 @@ namespace Game.Logic
                 List<LegendId> ids = new List<LegendId>(nation.Squad.Count);
                 foreach (LegendPlayer p in nation.Squad)
                     ids.Add(p.Id);
-                buckets.Add(new SpinBucket(nation.Badge, Era.E2020s, ids));
+                buckets.Add(new SpinBucket(nation.Badge, Era.None, ids));
             }
             return buckets;
         }

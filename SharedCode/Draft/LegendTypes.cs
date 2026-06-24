@@ -34,6 +34,8 @@ namespace Game.Logic
         E2000s = 2,
         E2010s = 3,
         E2020s = 4,
+        /// <summary> No decade dimension — used by World Cup national-team buckets (a nation isn't an era). </summary>
+        None   = 5,
     }
 
     /// <summary> Identifier for a player-season entry, e.g. "peter_schmeichel__manchester_united__1998_99". </summary>

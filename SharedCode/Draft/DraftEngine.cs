@@ -27,7 +27,8 @@ namespace Game.Logic
             CandidateIds = candidateIds;
         }
 
-        public string Label => $"{Club} · {EraLabel(Era)}";
+        // National-team buckets (Era.None) have no decade, so show just the nation, no " · " suffix.
+        public string Label => string.IsNullOrEmpty(EraLabel(Era)) ? Club : $"{Club} · {EraLabel(Era)}";
 
         public static string EraLabel(Era era) => era switch
         {
@@ -35,6 +36,8 @@ namespace Game.Logic
             Era.E1990s => "1990s",
             Era.E2000s => "2000s",
             Era.E2010s => "2010s",
+            Era.E2020s => "2020s",
+            Era.None   => "",
             _          => era.ToString(),
         };
     }
